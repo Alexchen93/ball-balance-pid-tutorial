@@ -1,0 +1,47 @@
+{
+  "camera": {
+    "index": 0,
+    "width": 640,
+    "height": 480,
+    "requested_fps": 30
+  },
+  "platform": {
+    "width_mm": 240.0,
+    "height_mm": 180.0,
+    "corners_px": [
+      [
+        154.0,
+        353.0
+      ],
+      [
+        561.0,
+        390.0
+      ],
+      [
+        500.0,
+        229.0
+      ],
+      [
+        229.0,
+        204.0
+      ]
+    ]
+  },
+  "ball_hsv": {
+    "hue": 30,
+    "hue_tolerance": 12,
+    "saturation_min": 80,
+    "value_min": 80
+  },
+  "detection": {
+    "min_radius_px": 4.0,
+    "max_radius_px": 80.0,
+    "filter_alpha": 0.35,
+    "morph_kernel_px": 5
+  },
+  "transport": {
+    "baudrate": 115200,
+    "update_hz": 30,
+    "lost_heartbeat_hz": 5
+  }
+}
