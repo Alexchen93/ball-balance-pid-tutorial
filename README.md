@@ -6,8 +6,6 @@
 
 - `Arduino_Nano_Ball_Balance/`：Nano 韌體、接線與機構校正說明。
 - `Camera_Vision/`：OpenCV 球體偵測、透視校正、Serial 通訊與可執行啟動腳本。
-- `3d列印檔案/`：球平衡平台的 STL 列印檔。
-- `平衡球.txt`：原始參考網址。
 
 ## 系統架構
 
