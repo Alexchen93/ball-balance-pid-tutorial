@@ -176,17 +176,8 @@ Serial Monitor 設定為 **115200 baud**，行尾選擇 Newline。
 3. 程式目前預設 I2C 位址為 `0x3C`；常見替代位址是 `0x3D`。確認模組位址後，修改 `OLED_ADDRESS` 並重新燒錄。
 4. 若燒錄或 Serial Monitor 出現連接埠忙碌，關閉其他 Arduino IDE Serial Monitor、`screen` 或 Python 攝影機程式，再重試。
 
-## Git 與版本控制
+## 授權
 
-此專案的 GitHub remote 為：<https://github.com/Alexchen93/ball-balance-pid-tutorial>
+本專案採用 [MIT License](LICENSE)。你可以自由使用、修改、散布、再授權與商業使用本專案的程式碼與文件；請保留原始授權與著作權聲明。
 
-建議每次完成一組可驗證修改後再提交，例如：
-
-```bash
-git status
-git add README.md Arduino_Nano_Ball_Balance_Joystick_Modes
-git commit -m "docs: add joystick calibration guide"
-git push origin main
-```
-
-不要提交 `.venv/`、`__pycache__/`、攝影機 log、個人參考資料或位於同一 sketch 資料夾的備份 `.ino`。
+硬體組裝、Servo 供電與機械結構具有風險，使用者應自行完成安全檢查、限幅設定與測試；作者不對由使用、修改或組裝本專案造成的損害負責。
