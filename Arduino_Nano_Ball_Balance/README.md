@@ -8,16 +8,14 @@
 | --- | --- |
 | D9 | Servo X 訊號 |
 | D10 | Servo Y 訊號 |
-| A4 / SDA | SSD1306 OLED SDA |
-| A5 / SCL | SSD1306 OLED SCL |
 | USB | Desktop 供電與 Serial（115200 baud） |
-| GND | OLED 與 Servo 外部電源的共地 |
+| GND | Servo 外部電源的共地 |
 
 Servo 必須使用獨立、足夠電流的 5–6 V BEC／DC-DC 供電，且其 GND 必須接到 Nano GND；絕不可由 Nano 5 V 腳供應兩顆 Servo。
 
 ## 燒錄與機構校正
 
-1. 安裝 Arduino Library Manager 的 `Servo`、`Adafruit GFX Library`、`Adafruit SSD1306`。
+1. 安裝 Arduino Library Manager 的 `Servo`。
 2. 燒錄 `Arduino_Nano_Ball_Balance.ino` 到 Arduino Nano（115200 baud）。若舊款 Nano 無法燒錄，選擇 `ATmega328P (Old Bootloader)`。
 3. 先讓平台空載，校正程式頂端的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_MIN_ANGLE`、`SERVO_MAX_ANGLE`。
 4. 以小角度測試每軸，若平台修正方向相反，將對應 `SERVO_*_DIRECTION` 改為 `-1`。
@@ -37,6 +35,6 @@ PIDX,0.10,0.00,0.25
 PIDY,0.10,0.00,0.25
 ```
 
-Nano 每秒回傳 10 筆 `TEL,...` 資料；OLED 顯示目前座標、誤差、PID 輸出、Servo 角度與連線／球遺失狀態。
+Nano 每秒回傳 10 筆 `TEL,...` 資料，包含目前座標、誤差、PID 輸出、Servo 角度與連線／球遺失狀態。
 
 初始 PID 參數只是一個低風險起點。先固定單一軸並以 `Ki=0` 測試小 `Kp`，確認方向正確後再提高 `Kp`、加入少量 `Kd`；若有固定偏差才少量加入 `Ki`。

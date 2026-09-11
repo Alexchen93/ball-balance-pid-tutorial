@@ -11,13 +11,10 @@
  *   TEL,<state>,<link>,<x>,<y>,<error_x>,<error_y>,<u_x>,<u_y>,<servo_x>,<servo_y>,<age_ms>
  *
  * Libraries to install from Arduino Library Manager:
- *   Servo, Adafruit GFX Library, Adafruit SSD1306
+ *   Servo
  */
 
 #include <Servo.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,10 +22,6 @@
 constexpr uint8_t SERVO_X_PIN = 9;
 constexpr uint8_t SERVO_Y_PIN = 10;
 constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
-constexpr uint8_t OLED_ADDRESS = 0x3C;  // Change to 0x3D if required.
-constexpr int SCREEN_WIDTH = 128;
-constexpr int SCREEN_HEIGHT = 64;
-
 // Mechanical calibration: set these before enabling RUN on the real platform.
 constexpr int SERVO_X_CENTER = 90;
 constexpr int SERVO_Y_CENTER = 90;
@@ -41,7 +34,6 @@ constexpr float POSITION_LIMIT_MM = 150.0f;
 constexpr float PID_OUTPUT_LIMIT_DEG = 8.0f;
 constexpr float PID_INTEGRAL_LIMIT = 60.0f;
 constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
-constexpr uint32_t OLED_PERIOD_MS = 100UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
 constexpr uint32_t SATURATION_WARNING_MS = 2000UL;
 
@@ -95,13 +87,11 @@ struct PIDController {
 
 Servo servoX;
 Servo servoY;
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 PIDController pidX(DEFAULT_KP_X, DEFAULT_KI_X, DEFAULT_KD_X);
 PIDController pidY(DEFAULT_KP_Y, DEFAULT_KI_Y, DEFAULT_KD_Y);
 
 ControllerState controllerState = WAIT_LINK;
 LinkState linkState = LINK_WAIT;
-bool oledAvailable = false;
 bool newPositionAvailable = false;
 bool servoSaturated = false;
 
@@ -118,7 +108,6 @@ int servoAngleY = SERVO_Y_CENTER;
 
 uint32_t lastPositionMs = 0;
 uint32_t lastPidUs = 0;
-uint32_t lastOledMs = 0;
 uint32_t lastTelemetryMs = 0;
 uint32_t saturationStartedMs = 0;
 
@@ -274,42 +263,6 @@ void printTelemetry() {
   Serial.print(','); Serial.println(ageMs);
 }
 
-void updateOled() {
-  if (!oledAvailable) {
-    return;
-  }
-  const uint32_t ageMs = positionIsFresh() ? millis() - lastPositionMs : 9999UL;
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.print(F("BALANCE BALL "));
-  display.print(controllerStateName(controllerState));
-  display.setCursor(0, 10);
-  display.print(F("X:")); display.print(ballX, 1);
-  display.print(F(" Y:")); display.print(ballY, 1);
-  display.setCursor(0, 20);
-  display.print(F("EX:")); display.print(errorX, 1);
-  display.print(F(" EY:")); display.print(errorY, 1);
-  display.setCursor(0, 30);
-  display.print(F("UX:")); display.print(outputX, 1);
-  display.print(F(" UY:")); display.print(outputY, 1);
-  display.setCursor(0, 40);
-  display.print(F("SX:")); display.print(servoAngleX);
-  display.print(F(" SY:")); display.print(servoAngleY);
-  display.setCursor(0, 50);
-  display.print(F("LINK:")); display.print(linkStateName(linkState));
-  display.print(F(" "));
-  if (servoSaturated && millis() - saturationStartedMs > SATURATION_WARNING_MS) {
-    display.print(F("SAT"));
-  } else if (ageMs < 1000UL) {
-    display.print(ageMs);
-    display.print(F("ms"));
-  } else {
-    display.print(F("---"));
-  }
-  display.display();
-}
 
 void updateStatusLed() {
   if (controllerState == RUN) {
@@ -411,12 +364,7 @@ void setup() {
   servoX.attach(SERVO_X_PIN);
   servoY.attach(SERVO_Y_PIN);
   writeNeutralServos();
-  Wire.begin();
-  oledAvailable = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS);
   Serial.println(F("BALL_CTRL,PC_VISION_MODE"));
-  if (!oledAvailable) {
-    Serial.println(F("WARN,OLED_NOT_FOUND"));
-  }
   printHelp();
 }
 
@@ -426,10 +374,6 @@ void loop() {
   updatePidForPosition();
 
   const uint32_t nowMs = millis();
-  if ((uint32_t)(nowMs - lastOledMs) >= OLED_PERIOD_MS) {
-    lastOledMs = nowMs;
-    updateOled();
-  }
   if ((uint32_t)(nowMs - lastTelemetryMs) >= TELEMETRY_PERIOD_MS) {
     lastTelemetryMs = nowMs;
     printTelemetry();

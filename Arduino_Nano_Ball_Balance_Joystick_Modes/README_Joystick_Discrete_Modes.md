@@ -12,11 +12,11 @@
 | 5V | VCC / +5V | 搖桿供電 |
 | GND | GND | 共地 |
 
-Servo X 使用 D9、Servo Y 使用 D10；OLED 使用 A4/SDA 與 A5/SCL。Servo 仍須由獨立 5–6 V 電源供應，並與 Nano 共地。
+Servo X 使用 D9、Servo Y 使用 D10。Servo 仍須由獨立 5–6 V 電源供應，並與 Nano 共地。
 
 ## 開機與 TEST 模式
 
-目前版本會在開機後**自動進入 TEST 模式**，不需要先長按搖桿按鈕。進入後預設為 M1。
+目前版本會在開機後**自動進入 TEST 模式**，不需要先長按搖桿按鈕。進入後預設為 MODE1。
 
 每一次推桿只接受一個軸的一次動作：
 
@@ -29,25 +29,22 @@ Servo X 使用 D9、Servo Y 使用 D10；OLED 使用 A4/SDA 與 A5/SCL。Servo �
 
 | Mode | 每次搖桿動作 |
 | --- | --- |
-| M1 | 選定軸 ±1° |
-| M2 | 選定軸 ±2° |
-| M3 | 選定軸 ±4° |
-| M4 LIMIT | 正方向前往 `SERVO_MAX_ANGLE`；負方向前往 `SERVO_MIN_ANGLE` |
+| MODE1 | 選定軸 ±1° |
+| MODE2 | 正方向前往 110°；負方向前往 70° |
 
-- **短按 SW**：`M1 → M2 → M3 → M4 → M1` 循環。
+- **短按 SW**：在 MODE1 / MODE2 之間切換。
 - **在 TEST 長按 SW 1.5 秒**：X、Y 回到 `testCenterX` / `testCenterY`。
 
-預設中心是 90°，安全範圍是 82°～98°；這些數值必須依實際連桿調整。
+預設中心是 90°，端點範圍是 70°～110°；這些數值必須依實際連桿調整。
 
 ## 建議校正流程
 
 1. 平台空載，確認 Servo 有獨立供電與共地。
-2. M1 以 1° 單步找平台水平。
-3. M2/M3 確認兩軸方向與機構反應。
-4. M4 逐一測試 X+/X-/Y+/Y-，確認端點不會卡住；若有風險，縮小 `SERVO_MIN_ANGLE` / `SERVO_MAX_ANGLE`。
-5. 在 115200 baud、Newline 的 Serial Monitor 輸入 `SETC`，再輸入 `SHOW`。
-6. 將 `SHOW` 印出的 `SERVO_X_CENTER` / `SERVO_Y_CENTER` 寫回 `.ino` 頂端的常數並重新燒錄，才會永久保存。
-7. 完成機構校正後，才進行攝影機校正與 PID 控制。
+2. MODE1 以 1° 單步找平台水平。
+3. MODE2 逐一測試 X+/X-/Y+/Y-，確認 70°～110° 端點不會卡住；若有風險，縮小 `SERVO_MIN_ANGLE` / `SERVO_MAX_ANGLE`。
+4. 在 115200 baud、Newline 的 Serial Monitor 輸入 `SETC`，再輸入 `SHOW`。
+5. 將 `SHOW` 印出的 `SERVO_X_CENTER` / `SERVO_Y_CENTER` 寫回 `.ino` 頂端的常數並重新燒錄，才會永久保存。
+6. 完成機構校正後，才進行攝影機校正與 PID 控制。
 
 ## 常用 Serial 指令
 
@@ -55,7 +52,8 @@ Servo X 使用 D9、Servo Y 使用 D10；OLED 使用 A4/SDA 與 A5/SCL。Servo �
 - `SHOW`：印出可複製回程式的校正常數。
 - `SETC` / `SETCX` / `SETCY`：設定測試中心。
 - `CENTER`：回到測試中心。
-- `STEP,1`、`STEP,2`、`STEP,4`：選擇步進大小。
+- `MODE,1` / `MODE,2`：選擇 1° 微調或端點模式。
+- `STEP,1`：選擇 1° 微調。
 - `X+`、`X-`、`Y+`、`Y-`：手動移動指定軸。
 - `X,角度`、`Y,角度`、`XY,X角度,Y角度`：直接指定安全範圍內的角度。
 - `JOY`：讀取搖桿 ADC 值；`JOYCAL`：重新校正搖桿中立值。
@@ -70,7 +68,3 @@ constexpr uint16_t JOYSTICK_LONG_PRESS_MS = 1500;
 ```
 
 若中立時會誤觸發，增加 `JOYSTICK_DEADZONE`；若每次操作要更慢，增加 `JOYSTICK_ACTION_DELAY_MS`。
-
-## OLED
-
-TEST 模式本應顯示目前 mode、Servo 角度、搖桿 ADC 值與步進資訊。若 OLED 沒有顯示，請確認 A4/SDA、A5/SCL、VCC、GND 接線與 I2C 位址；程式預設 `0x3C`，另一常見位址為 `0x3D`。可透過 115200 baud Serial Monitor 的 `STATUS` / `JOY` 指令繼續校正。

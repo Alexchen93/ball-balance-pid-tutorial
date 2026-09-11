@@ -14,18 +14,15 @@
  * Hold joystick SW for 1.5 s in WAIT/READY to enter TEST without a PC.
  * In TEST, each joystick deflection triggers exactly ONE movement. The stick
  * must return to center before another movement is accepted. Short-press SW
- * cycles M1=1 deg, M2=2 deg, M3=4 deg, M4=LIMIT. In LIMIT mode a single
- * deflection drives the selected X or Y axis directly to MIN/MAX. Long-press
- * SW in TEST returns both axes to the mechanical center.
+ * toggles MODE 1 = MICRO STEP (1 degree) and MODE 2 = ENDPOINT. In ENDPOINT
+ * mode a single deflection drives the selected X or Y axis directly to
+ * MIN/MAX. Long-press SW in TEST returns both axes to the mechanical center.
  *
  * Libraries to install from Arduino Library Manager:
- *   Servo, Adafruit GFX Library, Adafruit SSD1306
+ *   Servo
  */
 
 #include <Servo.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,15 +42,11 @@ constexpr uint16_t JOYSTICK_ACTION_DELAY_MS = 350;  // Minimum time between acce
 constexpr uint16_t JOYSTICK_LONG_PRESS_MS = 1500;
 constexpr uint16_t JOYSTICK_DEBOUNCE_MS = 30;
 
-constexpr uint8_t OLED_ADDRESS = 0x3C;  // Change to 0x3D if required.
-constexpr int SCREEN_WIDTH = 128;
-constexpr int SCREEN_HEIGHT = 64;
-
 // Mechanical calibration: set these before enabling RUN on the real platform.
 constexpr int SERVO_X_CENTER = 90;
 constexpr int SERVO_Y_CENTER = 90;
-constexpr int SERVO_MIN_ANGLE = 82;
-constexpr int SERVO_MAX_ANGLE = 98;
+constexpr int SERVO_MIN_ANGLE = 70;
+constexpr int SERVO_MAX_ANGLE = 110;
 constexpr int SERVO_X_DIRECTION = 1;  // Change to -1 if the X correction is reversed.
 constexpr int SERVO_Y_DIRECTION = 1;  // Change to -1 if the Y correction is reversed.
 
@@ -61,7 +54,6 @@ constexpr float POSITION_LIMIT_MM = 150.0f;
 constexpr float PID_OUTPUT_LIMIT_DEG = 8.0f;
 constexpr float PID_INTEGRAL_LIMIT = 60.0f;
 constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
-constexpr uint32_t OLED_PERIOD_MS = 100UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
 // Serial Monitor quiet by default. TELON/TELOFF can change this at runtime.
 bool autoTelemetryEnabled = false;
@@ -77,7 +69,7 @@ constexpr float DEFAULT_KD_Y = 0.25f;
 
 enum ControllerState : uint8_t { WAIT_LINK, READY, RUN, TEST };
 enum LinkState : uint8_t { LINK_WAIT, LINK_OK, BALL_LOST, LINK_LOST, POSITION_RANGE_ERROR };
-enum TestMoveMode : uint8_t { TEST_STEP_1, TEST_STEP_2, TEST_STEP_4, TEST_LIMIT };
+enum TestMoveMode : uint8_t { TEST_MICRO_STEP, TEST_ENDPOINT };
 
 struct PIDController {
   float kp;
@@ -118,13 +110,11 @@ struct PIDController {
 
 Servo servoX;
 Servo servoY;
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 PIDController pidX(DEFAULT_KP_X, DEFAULT_KI_X, DEFAULT_KD_X);
 PIDController pidY(DEFAULT_KP_Y, DEFAULT_KI_Y, DEFAULT_KD_Y);
 
 ControllerState controllerState = WAIT_LINK;
 LinkState linkState = LINK_WAIT;
-bool oledAvailable = false;
 bool newPositionAvailable = false;
 bool servoSaturated = false;
 
@@ -141,7 +131,6 @@ int servoAngleY = SERVO_Y_CENTER;
 
 uint32_t lastPositionMs = 0;
 uint32_t lastPidUs = 0;
-uint32_t lastOledMs = 0;
 uint32_t lastTelemetryMs = 0;
 uint32_t saturationStartedMs = 0;
 
@@ -162,8 +151,8 @@ uint32_t joystickPressStartedMs = 0;
 // calibration section after the platform is mechanically level.
 int testCenterX = SERVO_X_CENTER;
 int testCenterY = SERVO_Y_CENTER;
-int testStepDeg = 1;
-TestMoveMode testMoveMode = TEST_STEP_1;
+TestMoveMode testMoveMode = TEST_MICRO_STEP;
+constexpr int TEST_MICRO_STEP_DEG = 1;
 constexpr int TEST_OFFSET_DEG = 3;
 constexpr uint16_t TEST_HOLD_MS = 700;
 constexpr uint16_t TEST_RETURN_MS = 500;
@@ -276,56 +265,50 @@ int joystickDirectionFromAxis(int raw, int center, int direction) {
 
 const char *testMoveModeName(TestMoveMode mode) {
   switch (mode) {
-    case TEST_STEP_1: return "M1";
-    case TEST_STEP_2: return "M2";
-    case TEST_STEP_4: return "M3";
-    case TEST_LIMIT:  return "M4";
+    case TEST_MICRO_STEP: return "MODE1";
+    case TEST_ENDPOINT: return "MODE2";
   }
   return "?";
 }
 
-int testMoveStepDeg(TestMoveMode mode) {
-  switch (mode) {
-    case TEST_STEP_1: return 1;
-    case TEST_STEP_2: return 2;
-    case TEST_STEP_4: return 4;
-    case TEST_LIMIT:  return 0;
+void printTestModeGuide() {
+  if (testMoveMode == TEST_MICRO_STEP) {
+    Serial.println(F("MODE 1: MICRO STEP (1 degree)"));
+  } else {
+    Serial.print(F("MODE 2: ENDPOINT ("));
+    Serial.print(SERVO_MIN_ANGLE);
+    Serial.print(F("-"));
+    Serial.print(SERVO_MAX_ANGLE);
+    Serial.println(F(")"));
   }
-  return 1;
+  Serial.print(F("LIMITS,SERVO_MIN_ANGLE="));
+  Serial.print(SERVO_MIN_ANGLE);
+  Serial.print(F(",SERVO_MAX_ANGLE="));
+  Serial.println(SERVO_MAX_ANGLE);
+  Serial.println(F("JOY,ONE_DEFLECTION_ONE_AXIS,RETURN_CENTER_TO_REARM"));
+  Serial.println(F("JOYBTN,SHORT=SWITCH_MODE,LONG=CENTER_BOTH_AXES"));
 }
 
 void selectTestMoveMode(TestMoveMode mode) {
   testMoveMode = mode;
-  const int step = testMoveStepDeg(testMoveMode);
-  if (step > 0) testStepDeg = step;
 }
 
 void cycleTestMoveMode() {
-  switch (testMoveMode) {
-    case TEST_STEP_1: selectTestMoveMode(TEST_STEP_2); break;
-    case TEST_STEP_2: selectTestMoveMode(TEST_STEP_4); break;
-    case TEST_STEP_4: selectTestMoveMode(TEST_LIMIT);  break;
-    case TEST_LIMIT:  selectTestMoveMode(TEST_STEP_1); break;
-  }
+  selectTestMoveMode(testMoveMode == TEST_MICRO_STEP ? TEST_ENDPOINT : TEST_MICRO_STEP);
   Serial.print(F("JOYMODE,"));
-  Serial.print(testMoveModeName(testMoveMode));
-  if (testMoveMode == TEST_LIMIT) {
-    Serial.println(F(",LIMIT"));
-  } else {
-    Serial.print(F(",STEP="));
-    Serial.println(testStepDeg);
-  }
+  Serial.println(testMoveModeName(testMoveMode));
+  printTestModeGuide();
 }
 
 void applyOneJoystickMove(bool xAxis, int direction) {
   if (direction == 0) return;
 
-  if (testMoveMode == TEST_LIMIT) {
+  if (testMoveMode == TEST_ENDPOINT) {
     const int target = direction > 0 ? SERVO_MAX_ANGLE : SERVO_MIN_ANGLE;
     if (xAxis) writeManualServoX(target);
     else writeManualServoY(target);
   } else {
-    const int delta = direction * testStepDeg;
+    const int delta = direction * TEST_MICRO_STEP_DEG;
     if (xAxis) writeManualServoX(servoAngleX + delta);
     else writeManualServoY(servoAngleY + delta);
   }
@@ -425,8 +408,8 @@ void printTestStatus() {
   Serial.print(F(",MODE="));
   Serial.print(testMoveModeName(testMoveMode));
   Serial.print(F(",STEP="));
-  if (testMoveMode == TEST_LIMIT) Serial.print(F("LIMIT"));
-  else Serial.print(testStepDeg);
+  if (testMoveMode == TEST_ENDPOINT) Serial.print(F("ENDPOINT"));
+  else Serial.print(TEST_MICRO_STEP_DEG);
   Serial.print(F(",ARM="));
   Serial.println(joystickMoveArmed ? 1 : 0);
 }
@@ -453,12 +436,13 @@ void enterTestMode() {
   controllerState = TEST;
   testCenterX = SERVO_X_CENTER;
   testCenterY = SERVO_Y_CENTER;
-  selectTestMoveMode(TEST_STEP_1);
+  selectTestMoveMode(TEST_MICRO_STEP);
   writeManualBoth(testCenterX, testCenterY);
   calibrateJoystickCenter();
   joystickMoveArmed = true;
   lastJoystickMoveMs = millis() - JOYSTICK_ACTION_DELAY_MS;
   Serial.println(F("STATE,TEST"));
+  printTestModeGuide();
   printTestStatus();
 }
 
@@ -589,73 +573,6 @@ void printTelemetry() {
   Serial.print(','); Serial.println(ageMs);
 }
 
-void updateOled() {
-  if (!oledAvailable) {
-    return;
-  }
-
-  if (controllerState == TEST) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.print(F("JOY TEST "));
-    display.print(testMoveModeName(testMoveMode));
-    if (testMoveMode == TEST_LIMIT) display.print(F(" LIMIT"));
-    display.setCursor(0, 10);
-    display.print(F("SX:")); display.print(servoAngleX);
-    display.print(F(" SY:")); display.print(servoAngleY);
-    display.setCursor(0, 20);
-    display.print(F("CX:")); display.print(testCenterX);
-    display.print(F(" CY:")); display.print(testCenterY);
-    display.setCursor(0, 30);
-    display.print(F("JX:")); display.print(joystickRawX);
-    display.print(F(" JY:")); display.print(joystickRawY);
-    display.setCursor(0, 40);
-    if (testMoveMode == TEST_LIMIT) {
-      display.print(F("MOVE:MIN/MAX ONE"));
-    } else {
-      display.print(F("STEP:")); display.print(testStepDeg);
-      display.print(F(" deg ONE"));
-    }
-    display.setCursor(0, 50);
-    display.print(F("S:MODE H:CENTER"));
-    display.display();
-    return;
-  }
-
-  const uint32_t ageMs = positionIsFresh() ? millis() - lastPositionMs : 9999UL;
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.print(F("BALANCE BALL "));
-  display.print(controllerStateName(controllerState));
-  display.setCursor(0, 10);
-  display.print(F("X:")); display.print(ballX, 1);
-  display.print(F(" Y:")); display.print(ballY, 1);
-  display.setCursor(0, 20);
-  display.print(F("EX:")); display.print(errorX, 1);
-  display.print(F(" EY:")); display.print(errorY, 1);
-  display.setCursor(0, 30);
-  display.print(F("UX:")); display.print(outputX, 1);
-  display.print(F(" UY:")); display.print(outputY, 1);
-  display.setCursor(0, 40);
-  display.print(F("SX:")); display.print(servoAngleX);
-  display.print(F(" SY:")); display.print(servoAngleY);
-  display.setCursor(0, 50);
-  display.print(F("LINK:")); display.print(linkStateName(linkState));
-  display.print(F(" "));
-  if (servoSaturated && millis() - saturationStartedMs > SATURATION_WARNING_MS) {
-    display.print(F("SAT"));
-  } else if (ageMs < 1000UL) {
-    display.print(ageMs);
-    display.print(F("ms"));
-  } else {
-    display.print(F("---"));
-  }
-  display.display();
-}
 
 void updateStatusLed() {
   if (controllerState == TEST) {
@@ -672,10 +589,10 @@ void updateStatusLed() {
 void printHelp() {
   Serial.println(F("PC protocol: POS,x,y,timestamp | LOST | RUN | READY"));
   Serial.println(F("TARGET,x,y | PIDX,kp,ki,kd | PIDY,kp,ki,kd | PING"));
-  Serial.println(F("Hardware test: TEST | EXITTEST | CENTER | STATUS | SHOW | JOYCAL | JOY"));
+  Serial.println(F("Hardware test: TEST | EXITTEST | CENTER | STATUS | SHOW | JOYCAL | JOY | MODE,1|2"));
   Serial.println(F("Telemetry: TELNOW=once | TELON=auto 10Hz | TELOFF=quiet (default)"));
   Serial.println(F("Joystick TEST: one push = one axis move; return stick to center to re-arm"));
-  Serial.println(F("Joystick SW: short=next M1(1)/M2(2)/M3(4)/M4(LIMIT), long=center"));
+  Serial.println(F("Joystick SW: short=MODE 1 MICRO STEP / MODE 2 ENDPOINT, long=center"));
   Serial.println(F("TEST serial: X,n | Y,n | XY,x,y | X+ | X- | Y+ | Y- | TESTX | TESTY"));
 }
 
@@ -778,16 +695,31 @@ void processCommand(char *line) {
     if (strcmp(command, "STEP") == 0) {
       uint32_t stepValue;
       if (parseUnsigned(strtok(NULL, ","), stepValue) && strtok(NULL, ",") == NULL) {
-        if (stepValue == 1UL) selectTestMoveMode(TEST_STEP_1);
-        else if (stepValue == 2UL) selectTestMoveMode(TEST_STEP_2);
-        else if (stepValue == 4UL) selectTestMoveMode(TEST_STEP_4);
+        if (stepValue == 1UL) selectTestMoveMode(TEST_MICRO_STEP);
         else {
-          Serial.println(F("ERROR,BAD_STEP,USE_1_2_4"));
+          Serial.println(F("ERROR,BAD_STEP,USE_1"));
           return;
         }
+        printTestModeGuide();
         printTestStatus();
       } else {
-        Serial.println(F("ERROR,BAD_STEP,USE_1_2_4"));
+        Serial.println(F("ERROR,BAD_STEP,USE_1"));
+      }
+      return;
+    }
+    if (strcmp(command, "MODE") == 0) {
+      uint32_t modeValue;
+      if (parseUnsigned(strtok(NULL, ","), modeValue) && strtok(NULL, ",") == NULL) {
+        if (modeValue == 1UL) selectTestMoveMode(TEST_MICRO_STEP);
+        else if (modeValue == 2UL) selectTestMoveMode(TEST_ENDPOINT);
+        else {
+          Serial.println(F("ERROR,BAD_MODE,USE_1_2"));
+          return;
+        }
+        printTestModeGuide();
+        printTestStatus();
+      } else {
+        Serial.println(F("ERROR,BAD_MODE,USE_1_2"));
       }
       return;
     }
@@ -923,17 +855,12 @@ void setup() {
   servoX.attach(SERVO_X_PIN);
   servoY.attach(SERVO_Y_PIN);
   writeNeutralServos();
-  Wire.begin();
-  oledAvailable = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS);
   Serial.println(F("BALL_CTRL,PC_VISION_MODE"));
   Serial.println(F("FEATURE,HARDWARE_TEST_MODE"));
   Serial.println(F("FEATURE,5PIN_JOYSTICK_DISCRETE_TEST,A0,A1,D2"));
   Serial.println(F("TIP,AUTO_ENTER_TEST_ON_BOOT"));
-  Serial.println(F("TEST_MODES,M1=1deg,M2=2deg,M3=4deg,M4=LIMIT"));
+  Serial.println(F("TEST_MODES,MODE1=MICRO_STEP_1_DEG,MODE2=ENDPOINT"));
   Serial.println(F("TELEMETRY,QUIET_DEFAULT,USE_TELNOW_OR_TELON"));
-  if (!oledAvailable) {
-    Serial.println(F("WARN,OLED_NOT_FOUND"));
-  }
   // Boot directly into TEST mode so the joystick controls the platform
   // immediately, without the 1.5 s long-press requirement.
   enterTestMode();
@@ -948,10 +875,6 @@ void loop() {
   updatePidForPosition();
 
   const uint32_t nowMs = millis();
-  if ((uint32_t)(nowMs - lastOledMs) >= OLED_PERIOD_MS) {
-    lastOledMs = nowMs;
-    updateOled();
-  }
   if (autoTelemetryEnabled &&
       (uint32_t)(nowMs - lastTelemetryMs) >= TELEMETRY_PERIOD_MS) {
     lastTelemetryMs = nowMs;
