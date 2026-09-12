@@ -210,6 +210,7 @@ class BallVision:
         self.mode = "normal"
         self.corners: list[tuple[float, float]] = [tuple(point) for point in config["platform"]["corners_px"]]
         self.homography: np.ndarray | None = None
+        self.corner_order_message: str | None = None
         self.filtered_position: np.ndarray | None = None
         stored_reference = config.get("control", {}).get("zero_reference_mm")
         self.zero_reference: np.ndarray | None = (
@@ -231,9 +232,63 @@ class BallVision:
         self.fps = 0.0
         self._rebuild_homography()
 
+    def _corner_order_problem(self) -> str | None:
+        if len(self.corners) != 4:
+            return None
+        points = [(float(x), float(y)) for x, y in self.corners]
+        if not all(math.isfinite(value) for point in points for value in point):
+            return "Platform corner config has non-finite values. Press C to recalibrate TL, TR, BR, BL."
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        span_x = max(xs) - min(xs)
+        span_y = max(ys) - min(ys)
+        if span_x <= 1.0 or span_y <= 1.0:
+            return "Platform corner config is degenerate. Press C to recalibrate TL, TR, BR, BL."
+        center_x = (min(xs) + max(xs)) / 2.0
+        center_y = (min(ys) + max(ys)) / 2.0
+        tolerance_x = max(5.0, span_x * 0.08)
+        tolerance_y = max(5.0, span_y * 0.08)
+
+        top_left, top_right, bottom_right, bottom_left = points
+        expected_order = (
+            top_left[0] < center_x - tolerance_x
+            and top_left[1] < center_y - tolerance_y
+            and top_right[0] > center_x + tolerance_x
+            and top_right[1] < center_y - tolerance_y
+            and bottom_right[0] > center_x + tolerance_x
+            and bottom_right[1] > center_y + tolerance_y
+            and bottom_left[0] < center_x - tolerance_x
+            and bottom_left[1] > center_y + tolerance_y
+        )
+        if expected_order:
+            return None
+
+        looks_tl_bl_br_tr = (
+            top_left[0] < center_x - tolerance_x
+            and top_left[1] < center_y - tolerance_y
+            and top_right[0] < center_x - tolerance_x
+            and top_right[1] > center_y + tolerance_y
+            and bottom_right[0] > center_x + tolerance_x
+            and bottom_right[1] > center_y + tolerance_y
+            and bottom_left[0] > center_x + tolerance_x
+            and bottom_left[1] < center_y - tolerance_y
+        )
+        if looks_tl_bl_br_tr:
+            return (
+                "Stored platform corners look like TL, BL, BR, TR; RUN is blocked. "
+                "Press C to recalibrate TL, TR, BR, BL, or fix config with old indices [0,3,2,1]."
+            )
+        return "Stored platform corner order is ambiguous; RUN is blocked. Press C to recalibrate TL, TR, BR, BL."
+
     def _rebuild_homography(self) -> None:
+        self.corner_order_message = None
         if len(self.corners) != 4:
             self.homography = None
+            return
+        self.corner_order_message = self._corner_order_problem()
+        if self.corner_order_message is not None:
+            self.homography = None
+            print(self.corner_order_message)
             return
         width = float(self.config["platform"]["width_mm"])
         height = float(self.config["platform"]["height_mm"])
@@ -246,7 +301,7 @@ class BallVision:
         return all(key in settings for key in ("hue", "hue_tolerance", "saturation_min", "value_min"))
 
     def _has_platform(self) -> bool:
-        return len(self.corners) == 4 and self.homography is not None
+        return len(self.corners) == 4 and self.homography is not None and self.corner_order_message is None
 
     def _has_zero(self) -> bool:
         return self.zero_reference is not None
@@ -269,6 +324,8 @@ class BallVision:
             return f"C: click platform {self.corner_labels[next_index]} corner."
         if self.mode == "zero":
             return "D: click the place where the ball should rest at X=0 Y=0."
+        if self.corner_order_message is not None:
+            return self.corner_order_message
         if self._ready_complete():
             return "READY complete. Press R to start RUN; P stays READY; B/C/D recalibrate."
         if not self._has_ball_hsv():
@@ -280,6 +337,8 @@ class BallVision:
     def _print_ready_checklist(self) -> None:
         states = " | ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in self._ready_items().items())
         print(f"READY checklist: {states}")
+        if self.corner_order_message is not None:
+            print(self.corner_order_message)
         print(self._ready_prompt())
 
     def _save_and_report_ready(self) -> None:
@@ -495,6 +554,8 @@ class BallVision:
             position_text,
             f"FPS: {self.fps:.1f}",
         ]
+        if self.corner_order_message is not None:
+            lines.insert(4, self.corner_order_message[:95])
         if self.pid_running:
             lines.append(self.transport.last_telemetry[:75])
         for index, line in enumerate(lines):
