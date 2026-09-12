@@ -55,5 +55,5 @@ python3 -m serial.tools.list_ports -v
 
 - 只有 RUN 中 PC 才會傳送 `POS,x_mm,y_mm,timestamp_ms`；找不到球時才會送 `LOST`。
 - 最新正式 Nano 韌體成功接受合法 `POS` 時會回單行 `POS,OK`。若已燒錄的舊版韌體沒有 `POS,OK`，Python 在啟動 RUN 的初始 ACK 階段會相容接受座標相符且新鮮的 `TEL,READY,OK`，再送最後一筆 fresh `POS` 緊接 `RUN`；正式使用仍建議重燒最新版 `.ino`，讓協議一致。
-- Nano 僅接受 ±150 mm 內的位置；需要更大平台時，同步調整 Nano 的 `POSITION_LIMIT_MM`。
+- 正式 Nano 韌體接受 X ±260 mm、Y ±200 mm 內的位置；需要更大平台時，同步調整 `Arduino_Nano_Ball_Balance.ino` 的 `POSITION_LIMIT_X_MM` / `POSITION_LIMIT_Y_MM`。
 - 相機偵測、平台尺寸與 Servo 機構尚未實測，PID 起始值只作低風險驗證，不能保證已能平衡。

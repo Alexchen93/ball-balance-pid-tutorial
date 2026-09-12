@@ -28,10 +28,10 @@
     ]
   },
   "ball_hsv": {
-    "hue": 15,
+    "hue": 80,
     "hue_tolerance": 12,
-    "saturation_min": 20,
-    "value_min": 125
+    "saturation_min": 115,
+    "value_min": 20
   },
   "detection": {
     "min_radius_px": 4.0,
@@ -46,8 +46,8 @@
   },
   "control": {
     "zero_reference_mm": [
-      0.46,
-      10.71
+      -56.15,
+      7.65
     ]
   }
 }

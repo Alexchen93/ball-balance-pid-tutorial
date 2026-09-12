@@ -19,23 +19,36 @@ run() { exec "$python_bin" ball_vision.py "$@"; }
 
 find_nano() {
   mapfile -t ports < <("$python_bin" - <<'PY'
+import os
 from pathlib import Path
 from serial.tools import list_ports
 markers=("arduino","ch340","cp210","usb serial","ftdi")
 meta={p.device:f"{p.description or ''} {p.manufacturer or ''}".lower() for p in list_ports.comports()}
 all_ports={p for p in meta if p.startswith(("/dev/ttyUSB","/dev/ttyACM"))}
 all_ports.update(str(p) for p in Path("/dev").glob("ttyUSB*")); all_ports.update(str(p) for p in Path("/dev").glob("ttyACM*"))
-for p in sorted(all_ports): print(p + "\t" + ("likely" if any(m in meta.get(p,"") for m in markers) else "unknown"))
+for p in sorted(all_ports):
+    confidence="likely" if any(m in meta.get(p,"") for m in markers) else "unknown"
+    access="ok" if os.access(p, os.R_OK | os.W_OK) else "blocked"
+    print(p + "\t" + confidence + "\t" + access)
 PY
 )
-  local visible=() likely=() record device confidence
+  local visible=() likely=() blocked=() record device rest confidence access
   for record in "${ports[@]}"; do
-    device=${record%%$'\t'*}; confidence=${record#*$'\t'}
-    visible+=("$device"); [[ "$confidence" == likely ]] && likely+=("$device")
+    device=${record%%$'\t'*}; rest=${record#*$'\t'}; confidence=${rest%%$'\t'*}; access=${record##*$'\t'}
+    if [[ "$access" == ok ]]; then
+      visible+=("$device"); [[ "$confidence" == likely ]] && likely+=("$device")
+    else
+      blocked+=("$device")
+    fi
   done
   if [[ ${#likely[@]} -eq 1 ]]; then printf '%s' "${likely[0]}"; return 0; fi
   if [[ ${#visible[@]} -eq 1 ]]; then printf '%s' "${visible[0]}"; return 0; fi
-  if [[ ${#visible[@]} -eq 0 ]]; then echo "未找到 USB serial 裝置。" >&2; else printf '偵測到多個 USB serial：%s\n' "${visible[*]}" >&2; fi
+  if [[ ${#visible[@]} -eq 0 ]]; then
+    if [[ ${#blocked[@]} -gt 0 ]]; then printf 'USB serial 權限不足，Alex 無法讀寫：%s\n' "${blocked[*]}" >&2; else echo "未找到 USB serial 裝置。" >&2; fi
+  else
+    printf '偵測到多個可用 USB serial：%s\n' "${visible[*]}" >&2
+    [[ ${#blocked[@]} -gt 0 ]] && printf '已忽略權限不足的 USB serial：%s\n' "${blocked[*]}" >&2
+  fi
   return 1
 }
 
