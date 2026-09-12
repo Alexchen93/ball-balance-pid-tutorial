@@ -42,11 +42,17 @@ constexpr uint16_t JOYSTICK_ACTION_DELAY_MS = 350;  // Minimum time between acce
 constexpr uint16_t JOYSTICK_LONG_PRESS_MS = 1500;
 constexpr uint16_t JOYSTICK_DEBOUNCE_MS = 30;
 
+// ===== 學生校正參數（校正完成後只修改本區） =====
 // Mechanical calibration: set these before enabling RUN on the real platform.
-constexpr int SERVO_X_CENTER = 90;
-constexpr int SERVO_Y_CENTER = 90;
-constexpr int SERVO_MIN_ANGLE = 70;
-constexpr int SERVO_MAX_ANGLE = 110;
+constexpr int SERVO_X_CENTER = 71;
+constexpr int SERVO_Y_CENTER = 76;
+// X 中心左右可移動的安全範圍。目前端點是 X中心90 ±20，推導為 70～110 度；
+// 調整 OFFSET 即可改安全行程，不需要手算端點。
+// 若未來 X/Y 中心分開，須確認共用範圍仍適用，避免暗中改變 PID 行為。
+constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
+constexpr int SERVO_MIN_ANGLE = SERVO_X_CENTER - SERVO_LIMIT_OFFSET_DEG;
+constexpr int SERVO_MAX_ANGLE = SERVO_X_CENTER + SERVO_LIMIT_OFFSET_DEG;
+// ===== 學生校正參數結束 =====
 constexpr int SERVO_X_DIRECTION = 1;  // Change to -1 if the X correction is reversed.
 constexpr int SERVO_Y_DIRECTION = 1;  // Change to -1 if the Y correction is reversed.
 
@@ -284,7 +290,9 @@ void printTestModeGuide() {
   Serial.print(F("LIMITS,SERVO_MIN_ANGLE="));
   Serial.print(SERVO_MIN_ANGLE);
   Serial.print(F(",SERVO_MAX_ANGLE="));
-  Serial.println(SERVO_MAX_ANGLE);
+  Serial.print(SERVO_MAX_ANGLE);
+  Serial.print(F(",SERVO_LIMIT_OFFSET_DEG="));
+  Serial.println(SERVO_LIMIT_OFFSET_DEG);
   Serial.println(F("JOY,ONE_DEFLECTION_ONE_AXIS,RETURN_CENTER_TO_REARM"));
   Serial.println(F("JOYBTN,SHORT=SWITCH_MODE,LONG=CENTER_BOTH_AXES"));
 }
@@ -410,6 +418,12 @@ void printTestStatus() {
   Serial.print(F(",STEP="));
   if (testMoveMode == TEST_ENDPOINT) Serial.print(F("ENDPOINT"));
   else Serial.print(TEST_MICRO_STEP_DEG);
+  Serial.print(F(",MIN="));
+  Serial.print(SERVO_MIN_ANGLE);
+  Serial.print(F(",MAX="));
+  Serial.print(SERVO_MAX_ANGLE);
+  Serial.print(F(",OFFSET="));
+  Serial.print(SERVO_LIMIT_OFFSET_DEG);
   Serial.print(F(",ARM="));
   Serial.println(joystickMoveArmed ? 1 : 0);
 }
@@ -422,10 +436,12 @@ void printTestCalibration() {
   Serial.print(F("constexpr int SERVO_Y_CENTER = "));
   Serial.print(testCenterY);
   Serial.println(F(";"));
-  Serial.print(F("constexpr int SERVO_MIN_ANGLE = "));
-  Serial.print(SERVO_MIN_ANGLE);
+  Serial.print(F("constexpr int SERVO_LIMIT_OFFSET_DEG = "));
+  Serial.print(SERVO_LIMIT_OFFSET_DEG);
   Serial.println(F(";"));
-  Serial.print(F("constexpr int SERVO_MAX_ANGLE = "));
+  Serial.print(F("// Derived endpoints: "));
+  Serial.print(SERVO_MIN_ANGLE);
+  Serial.print(F("-"));
   Serial.print(SERVO_MAX_ANGLE);
   Serial.println(F(";"));
   Serial.println(F("-----------------------------------------"));

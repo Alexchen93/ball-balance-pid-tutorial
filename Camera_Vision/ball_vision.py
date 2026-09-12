@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import sys
 import time
@@ -16,7 +17,7 @@ import serial
 from serial.tools import list_ports
 
 
-WINDOW_NAME = "Ball vision: c=platform b=ball colour r=PID q=quit"
+WINDOW_NAME = "Ball vision: READY checklist | b=HSV c=platform d=zero r=RUN q=quit"
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -31,48 +32,131 @@ def save_config(path: Path, config: dict[str, Any]) -> None:
 class NanoTransport:
     def __init__(self, port: str | None, baudrate: int, disabled: bool) -> None:
         self.connection: serial.Serial | None = None
-        self.last_telemetry = "No serial"
+        self.baudrate = baudrate
+        self.last_telemetry = "No serial selected; READY setup only" if disabled else "Nano disconnected; press n to search."
+        self.last_terminal_controller_state: str | None = None
         if disabled:
-            return
-        selected_port = port or self._find_arduino_port()
-        if not selected_port:
-            raise RuntimeError(
-                "找不到 Arduino serial 埠。請接上 Nano 後指定 --serial-port /dev/ttyUSB0，"
-                "或以 --no-serial 只測試鏡頭。"
-            )
-        self.connection = serial.Serial(selected_port, baudrate=baudrate, timeout=0, write_timeout=0.2)
-        time.sleep(2.0)  # A classic Nano normally resets when USB serial opens.
-        self.send("READY")
-        self.send("PING")
-        print(f"Nano connected: {selected_port} @ {baudrate}")
+            print("No Nano selected. READY setup is active; press n to search for Nano later.")
+        elif port:
+            self._connect(port)
+        else:
+            self.search_and_connect()
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connection is not None
 
     @staticmethod
-    def _find_arduino_port() -> str | None:
-        likely_ports = []
-        for port in list_ports.comports():
-            description = f"{port.description} {port.manufacturer or ''}".lower()
-            if any(marker in description for marker in ("arduino", "ch340", "cp210", "usb serial", "ftdi")):
-                likely_ports.append(port.device)
-        return likely_ports[0] if len(likely_ports) == 1 else None
+    def _candidate_ports() -> tuple[list[str], list[str]]:
+        markers = ("arduino", "ch340", "cp210", "usb serial", "ftdi")
+        metadata = {
+            port.device: f"{port.description or ''} {port.manufacturer or ''}".lower()
+            for port in list_ports.comports()
+        }
+        visible = set(metadata)
+        visible.update(glob.glob("/dev/ttyUSB*"))
+        visible.update(glob.glob("/dev/ttyACM*"))
+        visible_ports = sorted(
+            device for device in visible if device.startswith(("/dev/ttyUSB", "/dev/ttyACM"))
+        )
+        likely_ports = [
+            device for device in visible_ports if any(marker in metadata.get(device, "") for marker in markers)
+        ]
+        return visible_ports, likely_ports
 
-    def send(self, line: str) -> None:
+    def _connect(self, port: str) -> bool:
+        try:
+            connection = serial.Serial(port, baudrate=self.baudrate, timeout=0, write_timeout=0.2)
+            self.connection = connection
+            time.sleep(2.0)  # A classic Nano normally resets when USB serial opens.
+            self.send("READY")
+            self.send("PING")
+            if self.connection is None:
+                return False
+            self.last_telemetry = f"Nano connected: {port}"
+            print(f"Nano connected: {port} @ {self.baudrate}")
+            return True
+        except (OSError, serial.SerialException) as error:
+            self.connection = None
+            self.last_telemetry = f"Nano connect failed: {error}"
+            print(f"NANO CONNECT ERROR ({port}): {error}")
+            return False
+
+    def search_and_connect(self) -> bool:
+        if self.connection is not None:
+            print("Nano is already connected.")
+            return True
+        visible_ports, likely_ports = self._candidate_ports()
+        if len(likely_ports) == 1:
+            print(f"Searching Nano: using unique USB-serial candidate {likely_ports[0]}")
+            return self._connect(likely_ports[0])
+        if len(visible_ports) == 1:
+            print(f"Searching Nano: using only visible USB-serial device {visible_ports[0]}")
+            return self._connect(visible_ports[0])
+        if not visible_ports:
+            self.last_telemetry = "No USB serial; press n to retry."
+            print("NANO SEARCH: no /dev/ttyUSB* or /dev/ttyACM* found. Plug Nano in, then press n to retry.")
+        else:
+            self.last_telemetry = "Multiple USB serial devices; press n after selecting one."
+            print(f"NANO SEARCH: multiple candidates: {', '.join(visible_ports)}")
+            print("Disconnect other USB serial devices, then press n to retry; use --serial-port only for manual override.")
+        return False
+
+    def send(self, line: str) -> bool:
         if self.connection is None:
-            return
-        self.connection.write((line + "\n").encode("ascii"))
+            return False
+        try:
+            self.connection.write((line + "\n").encode("ascii"))
+            return True
+        except (OSError, serial.SerialException, serial.SerialTimeoutException) as error:
+            self.last_telemetry = f"Nano link lost: {error}"
+            print(f"NANO WRITE ERROR: {error}. Servo control is safely stopped; press n to reconnect.")
+            self.close(send_ready=False)
+            return False
 
     def poll(self) -> None:
         if self.connection is None:
             return
-        while self.connection.in_waiting:
-            line = self.connection.readline().decode("ascii", errors="replace").strip()
-            if line:
-                self.last_telemetry = line
+        try:
+            while self.connection.in_waiting:
+                line = self.connection.readline().decode("ascii", errors="replace").strip()
+                if not line:
+                    continue
+                # TEL,state,link,ballX,ballY,errorX,errorY,outputX,outputY,servoX,servoY,ageMs
+                parts = line.split(",")
+                if len(parts) == 12 and parts[0] == "TEL":
+                    self.last_telemetry = line
+                    # Keep setup quiet: print one status when READY changes, then
+                    # stream live servo feedback only after the user presses r.
+                    controller_state = parts[1]
+                    if controller_state == "RUN" or controller_state != self.last_terminal_controller_state:
+                        print(
+                            "SERVO"
+                            f" state={controller_state} link={parts[2]}"
+                            f" ball=({parts[3]},{parts[4]})"
+                            f" error=({parts[5]},{parts[6]})"
+                            f" output=({parts[7]},{parts[8]})deg"
+                            f" angle=X:{parts[9]}deg Y:{parts[10]}deg"
+                            f" position_age={parts[11]}ms"
+                        )
+                    self.last_terminal_controller_state = controller_state
+                else:
+                    self.last_telemetry = line
+                    print(f"NANO {line}")
+        except (OSError, serial.SerialException) as error:
+            self.last_telemetry = f"Nano link lost: {error}"
+            print(f"NANO READ ERROR: {error}. Press n to reconnect.")
+            self.close(send_ready=False)
 
-    def close(self) -> None:
+    def close(self, send_ready: bool = True) -> None:
         if self.connection is None:
             return
         try:
-            self.send("READY")
+            if send_ready:
+                try:
+                    self.connection.write(b"READY\n")
+                except (OSError, serial.SerialException, serial.SerialTimeoutException):
+                    pass
         finally:
             self.connection.close()
             self.connection = None
@@ -88,11 +172,19 @@ class BallVision:
         self.corners: list[tuple[float, float]] = [tuple(point) for point in config["platform"]["corners_px"]]
         self.homography: np.ndarray | None = None
         self.filtered_position: np.ndarray | None = None
+        stored_reference = config.get("control", {}).get("zero_reference_mm")
+        self.zero_reference: np.ndarray | None = (
+            np.array(stored_reference, dtype=np.float32)
+            if isinstance(stored_reference, list) and len(stored_reference) == 2
+            else None
+        )
         self.latest_frame: np.ndarray | None = None
         self.latest_hsv: np.ndarray | None = None
+        self.corner_labels = ("top-left", "top-right", "bottom-right", "bottom-left")
         self.pid_running = False
         self.last_sent_at = 0.0
         self.last_lost_at = 0.0
+        self.latest_position: tuple[float, float] | None = None
         self.last_frame_at = time.monotonic()
         self.fps = 0.0
         self._rebuild_homography()
@@ -106,6 +198,68 @@ class BallVision:
         source = np.float32(self.corners)
         destination = np.float32([[0, 0], [width, 0], [width, height], [0, height]])
         self.homography = cv2.getPerspectiveTransform(source, destination)
+
+    def _has_ball_hsv(self) -> bool:
+        settings = self.config.get("ball_hsv", {})
+        return all(key in settings for key in ("hue", "hue_tolerance", "saturation_min", "value_min"))
+
+    def _has_platform(self) -> bool:
+        return len(self.corners) == 4 and self.homography is not None
+
+    def _has_zero(self) -> bool:
+        return self.zero_reference is not None
+
+    def _ready_items(self) -> dict[str, bool]:
+        return {
+            "B ball HSV": self._has_ball_hsv(),
+            "C platform border": self._has_platform(),
+            "D zero point": self._has_zero(),
+        }
+
+    def _ready_complete(self) -> bool:
+        return all(self._ready_items().values())
+
+    def _ready_prompt(self) -> str:
+        if self.mode == "ball_colour":
+            return "B: click the ball centre to sample HSV only."
+        if self.mode == "corners":
+            next_index = min(len(self.corners), 3)
+            return f"C: click platform {self.corner_labels[next_index]} corner."
+        if self.mode == "zero":
+            return "D: click the place where the ball should rest at X=0 Y=0."
+        if self._ready_complete():
+            return "READY complete. Press R to start RUN; B/C/D recalibrate."
+        if not self._has_ball_hsv():
+            return "Next: press B, then click the ball centre for HSV."
+        if not self._has_platform():
+            return "Next: press C, then click TL, TR, BR, BL platform corners."
+        return "Next: press D, then click the desired balance zero point."
+
+    def _print_ready_checklist(self) -> None:
+        states = " | ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in self._ready_items().items())
+        print(f"READY checklist: {states}")
+        print(self._ready_prompt())
+
+    def _save_and_report_ready(self) -> None:
+        save_config(self.config_path, self.config)
+        self._print_ready_checklist()
+
+    def _apply_saved_config(self) -> None:
+        self.pid_running = False
+        self.transport.send("READY")
+        self.config = load_config(self.config_path)
+        self.corners = [tuple(point) for point in self.config["platform"].get("corners_px", [])]
+        stored_reference = self.config.get("control", {}).get("zero_reference_mm")
+        self.zero_reference = (
+            np.array(stored_reference, dtype=np.float32)
+            if isinstance(stored_reference, list) and len(stored_reference) == 2
+            else None
+        )
+        self.filtered_position = None
+        self.mode = "normal"
+        self._rebuild_homography()
+        print("Saved camera_config.json applied.")
+        self._print_ready_checklist()
 
     def _platform_position(self, point: tuple[float, float]) -> tuple[float, float] | None:
         if self.homography is None:
@@ -156,6 +310,10 @@ class BallVision:
         return center, radius
 
     def _send_position(self, position: tuple[float, float] | None) -> None:
+        # Calibration may run while connected, but no live position commands are
+        # sent until r explicitly starts PID control.
+        if not self.pid_running:
+            return
         now = time.monotonic()
         transport_settings = self.config["transport"]
         if position is None:
@@ -177,75 +335,145 @@ class BallVision:
             points = np.int32(self.corners)
             cv2.polylines(overlay, [points], len(self.corners) == 4, (255, 255, 0), 2)
             for index, point in enumerate(points):
-                cv2.putText(overlay, str(index + 1), tuple(point), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                label = str(index + 1)
+                cv2.putText(overlay, label, tuple(point), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         if ball:
             center, radius = ball
             cv2.circle(overlay, (round(center[0]), round(center[1])), round(radius), (0, 255, 0), 2)
             cv2.circle(overlay, (round(center[0]), round(center[1])), 3, (0, 0, 255), -1)
-        status = "RUN" if self.pid_running else "SAFE / READY"
-        calibration = "CALIBRATED" if self.homography is not None else "PRESS c, CLICK 4 CORNERS"
-        position_text = "BALL: LOST" if position is None else f"BALL: X={position[0]:+.1f} mm  Y={position[1]:+.1f} mm"
-        lines = [f"PID: {status}", calibration, position_text, f"FPS: {self.fps:.1f}", self.transport.last_telemetry[:75]]
+
+        run_state = "RUN" if self.pid_running else ("READY COMPLETE" if self._ready_complete() else "READY SETUP")
+        nano_status = "NANO: CONNECTED" if self.transport.is_connected else "NANO: DISCONNECTED (press n to search)"
+        items = self._ready_items()
+        checklist = "  ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in items.items())
+        if self.pid_running:
+            position_text = "BALL: LOST" if position is None else f"BALL: X={position[0]:+.1f} mm  Y={position[1]:+.1f} mm"
+        else:
+            position_text = "READY: no POS/LOST/servo commands are sent"
+        lines = [
+            f"STATE: {run_state}",
+            nano_status,
+            checklist,
+            self._ready_prompt(),
+            position_text,
+            f"FPS: {self.fps:.1f}",
+        ]
+        if self.pid_running:
+            lines.append(self.transport.last_telemetry[:75])
         for index, line in enumerate(lines):
-            cv2.putText(overlay, line, (10, 25 + index * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-            cv2.putText(overlay, line, (10, 25 + index * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1)
+            y = 25 + index * 25
+            cv2.putText(overlay, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+            cv2.putText(overlay, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1)
         if self.mode != "normal":
-            cv2.putText(overlay, f"MODE: {self.mode}", (10, overlay.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(overlay, f"ACTIVE STEP: {self.mode}", (10, overlay.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return overlay
 
     def _mouse_callback(self, event: int, x: int, y: int, _flags: int, _param: Any) -> None:
         if event != cv2.EVENT_LBUTTONDOWN or self.latest_frame is None:
             return
+        if self.mode == "ball_colour" and self.latest_hsv is not None:
+            if 0 <= y < self.latest_hsv.shape[0] and 0 <= x < self.latest_hsv.shape[1]:
+                hue, saturation, value = (int(component) for component in self.latest_hsv[y, x])
+                settings = self.config["ball_hsv"]
+                settings["hue"] = hue
+                settings["saturation_min"] = max(20, saturation - 70)
+                settings["value_min"] = max(20, value - 70)
+                self.mode = "normal"
+                print(
+                    f"B saved centre-pixel HSV only: H={hue}, "
+                    f"S>={settings['saturation_min']}, V>={settings['value_min']}."
+                )
+                self._save_and_report_ready()
+            return
+
         if self.mode == "corners":
             self.corners.append((float(x), float(y)))
+            clicked = self.corner_labels[len(self.corners) - 1]
+            print(f"C captured {clicked} corner ({x}, {y}).")
             if len(self.corners) == 4:
                 self.config["platform"]["corners_px"] = self.corners
                 self._rebuild_homography()
-                save_config(self.config_path, self.config)
+                self.filtered_position = None
+                self.zero_reference = None
+                self.config.setdefault("control", {}).pop("zero_reference_mm", None)
                 self.mode = "normal"
-                print("Platform calibration saved.")
+                print("C saved platform border. D zero point must be selected for this border.")
+                self._save_and_report_ready()
+            else:
+                print(f"C next: click {self.corner_labels[len(self.corners)]} corner.")
             return
-        if self.mode == "ball_colour" and self.latest_hsv is not None:
-            patch = self.latest_hsv[max(0, y - 5): y + 6, max(0, x - 5): x + 6]
-            if patch.size:
-                hue, saturation, value = np.median(patch.reshape(-1, 3), axis=0).astype(int)
-                settings = self.config["ball_hsv"]
-                settings["hue"] = int(hue)
-                settings["saturation_min"] = max(20, int(saturation) - 70)
-                settings["value_min"] = max(20, int(value) - 70)
-                save_config(self.config_path, self.config)
-                self.mode = "normal"
-                print(f"Ball colour saved: H={hue}, S>={settings['saturation_min']}, V>={settings['value_min']}")
+
+        if self.mode == "zero":
+            position = self._platform_position((float(x), float(y)))
+            if position is None:
+                print("D needs platform border first: press C and click all four corners.")
+                return
+            self.zero_reference = np.array(position, dtype=np.float32)
+            self.config.setdefault("control", {})["zero_reference_mm"] = [
+                round(float(position[0]), 2),
+                round(float(position[1]), 2),
+            ]
+            self.filtered_position = None
+            self.mode = "normal"
+            print(f"D saved zero point: raw platform X={position[0]:+.1f}, Y={position[1]:+.1f} mm becomes X=0, Y=0.")
+            self._save_and_report_ready()
             return
-        position = self._platform_position((float(x), float(y)))
-        if position is not None:
-            self.transport.send(f"TARGET,{position[0]:.2f},{position[1]:.2f}")
-            print(f"Target set to X={position[0]:+.1f}, Y={position[1]:+.1f} mm")
+
+        print("READY: press B for HSV, C for platform border, D for zero point, or R to RUN when complete.")
 
     def handle_key(self, key: int) -> bool:
         if key in (ord("q"), 27):
             return False
-        if key == ord("c"):
+        if key == ord("n"):
+            self.pid_running = False
+            self.transport.send("READY")
+            self.mode = "normal"
+            self.transport.search_and_connect()
+        elif key == ord("a"):
+            self._apply_saved_config()
+        elif key == ord("b"):
+            self.pid_running = False
+            self.transport.send("READY")
+            self.mode = "ball_colour"
+            print("B: click the centre of the ball. Only HSV colour will be saved.")
+        elif key == ord("c"):
             self.pid_running = False
             self.transport.send("READY")
             self.corners = []
             self.homography = None
             self.filtered_position = None
+            self.zero_reference = None
+            self.config.setdefault("control", {}).pop("zero_reference_mm", None)
             self.mode = "corners"
-            print("Click platform corners in order: top-left, top-right, bottom-right, bottom-left.")
-        elif key == ord("b"):
-            self.mode = "ball_colour"
-            print("Click the ball to sample its HSV colour.")
-        elif key == ord("r"):
+            print("C: click platform corners in order: top-left, top-right, bottom-right, bottom-left.")
+        elif key == ord("d"):
+            self.pid_running = False
+            self.transport.send("READY")
             if self.homography is None:
-                print("Cannot RUN: calibrate the four platform corners first.")
+                print("D needs platform border first: press C and click all four corners.")
             else:
-                self.pid_running = not self.pid_running
-                self.transport.send("RUN" if self.pid_running else "READY")
-                print("PID RUN" if self.pid_running else "PID READY")
-        elif key == ord("0"):
-            self.transport.send("TARGET,0.00,0.00")
-            print("Target reset to platform centre.")
+                self.mode = "zero"
+                print("D: click the place where the ball should rest. That point becomes X=0, Y=0.")
+        elif key == ord("r"):
+            if self.pid_running:
+                self.pid_running = False
+                self.transport.send("READY")
+                print("RUN stopped. Back to READY; no live position or servo commands are being sent.")
+            elif self.mode != "normal":
+                print("Cannot RUN: finish the active READY step first, or press A to apply saved config.")
+            elif not self.transport.is_connected:
+                print("Cannot RUN: Nano is not connected. Press n to search.")
+            elif not self._ready_complete():
+                print("Cannot RUN: READY checklist is incomplete.")
+                self._print_ready_checklist()
+            elif self.latest_position is None:
+                print("Cannot RUN: ball is not detected yet. Keep it visible, then press R again.")
+            else:
+                self.pid_running = True
+                self.last_sent_at = 0.0
+                self.last_lost_at = 0.0
+                self.transport.send("RUN")
+                print("RUN started by explicit R. Live position and servo control are now enabled.")
         return True
 
     def run(self, camera_index: int, width: int, height: int, requested_fps: int, max_frames: int) -> None:
@@ -258,6 +486,8 @@ class BallVision:
         if not self.headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
             cv2.setMouseCallback(WINDOW_NAME, self._mouse_callback)
+            print("GUIDE: READY checklist uses A=apply saved config, B=HSV, C=platform TL/TR/BR/BL, D=zero point, R=RUN, Q=quit.")
+            self._print_ready_checklist()
 
         frame_count = 0
         try:
@@ -272,6 +502,11 @@ class BallVision:
                 self.latest_frame = frame
                 ball = self._detect_ball(frame)
                 position = self._platform_position(ball[0]) if ball else None
+                if position is not None and self.zero_reference is not None:
+                    position = (
+                        position[0] - float(self.zero_reference[0]),
+                        position[1] - float(self.zero_reference[1]),
+                    )
                 if position is not None:
                     sample = np.array(position, dtype=np.float32)
                     alpha = float(self.config["detection"]["filter_alpha"])
@@ -279,8 +514,10 @@ class BallVision:
                     position = (float(self.filtered_position[0]), float(self.filtered_position[1]))
                 else:
                     self.filtered_position = None
+                self.latest_position = position
                 self._send_position(position)
-                self.transport.poll()
+                if self.pid_running:
+                    self.transport.poll()
                 if not self.headless:
                     cv2.imshow(WINDOW_NAME, self._draw_overlay(frame, ball, position))
                     if not self.handle_key(cv2.waitKey(1) & 0xFF):
@@ -300,7 +537,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=default_config)
     parser.add_argument("--camera-index", type=int)
     parser.add_argument("--serial-port", help="e.g. /dev/ttyUSB0 or /dev/ttyACM0")
-    parser.add_argument("--no-serial", action="store_true", help="run vision only; never control Nano")
+    parser.add_argument("--no-serial", action="store_true", help="open READY setup without a Nano connection")
     parser.add_argument("--headless", action="store_true", help="no preview window; useful for camera diagnostics")
     parser.add_argument("--max-frames", type=int, default=0, help="stop after this many frames (0 = run until q)")
     return parser.parse_args()

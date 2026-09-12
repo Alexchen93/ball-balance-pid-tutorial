@@ -30,20 +30,20 @@ Servo X 使用 D9、Servo Y 使用 D10。Servo 仍須由獨立 5–6 V 電源供
 | Mode | 每次搖桿動作 |
 | --- | --- |
 | MODE1 | 選定軸 ±1° |
-| MODE2 | 正方向前往 110°；負方向前往 70° |
+| MODE2 | 正方向前往推導後的 MAX；負方向前往推導後的 MIN（目前中心 90、範圍 ±20，為 110° / 70°） |
 
 - **短按 SW**：在 MODE1 / MODE2 之間切換。
 - **在 TEST 長按 SW 1.5 秒**：X、Y 回到 `testCenterX` / `testCenterY`。
 
-預設中心是 90°，端點範圍是 70°～110°；這些數值必須依實際連桿調整。
+預設中心是 90°，`SERVO_LIMIT_OFFSET_DEG` 是 20，因此端點由 X 中心 ±20 推導為 70°～110°；調整 offset 可改安全行程，不需要手算端點。
 
 ## 建議校正流程
 
 1. 平台空載，確認 Servo 有獨立供電與共地。
 2. MODE1 以 1° 單步找平台水平。
-3. MODE2 逐一測試 X+/X-/Y+/Y-，確認 70°～110° 端點不會卡住；若有風險，縮小 `SERVO_MIN_ANGLE` / `SERVO_MAX_ANGLE`。
+3. MODE2 逐一測試 X+/X-/Y+/Y-，確認目前由中心 90、範圍 ±20 推導出的 70°～110° 端點不會卡住；若有風險，縮小 `SERVO_LIMIT_OFFSET_DEG`。
 4. 在 115200 baud、Newline 的 Serial Monitor 輸入 `SETC`，再輸入 `SHOW`。
-5. 將 `SHOW` 印出的 `SERVO_X_CENTER` / `SERVO_Y_CENTER` 寫回 `.ino` 頂端的常數並重新燒錄，才會永久保存。
+5. 將 `SHOW` 印出的 `SERVO_X_CENTER` / `SERVO_Y_CENTER` / `SERVO_LIMIT_OFFSET_DEG` 寫回 `.ino` 頂端的常數並重新燒錄，才會永久保存。
 6. 完成機構校正後，才進行攝影機校正與 PID 控制。
 
 ## 常用 Serial 指令

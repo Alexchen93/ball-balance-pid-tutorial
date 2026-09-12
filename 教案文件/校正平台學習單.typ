@@ -56,11 +56,11 @@
   check[測試時手指離開連桿與伺服臂],
 )
 
-#text(size: 8.0pt)[序列監控設 #raw("115200") baud；開機進入 #raw("MODE 1: MICRO STEP (1 degree)")。短按 SW 切換 #raw("MODE 2: ENDPOINT (70-110)")，長按 SW 回中心；每次推桿只接受單一主要軸，回中後才可再動。]
+#text(size: 8.0pt)[序列監控設 #raw("115200") baud；開機進入 #raw("MODE 1: MICRO STEP (1 degree)")。短按 SW 切換 #raw("MODE 2: ENDPOINT")；目前中心 90、範圍 ±20，端點推導為 70–110。長按 SW 回中心；每次推桿只接受單一主要軸，回中後才可再動。]
 #grid(
   columns: (1fr, 1fr),
   gutter: 0.8em,
-  check[已看見 MODE 1／MODE 2 訊息與端點 70–110],
+  check[已看見 MODE 1／MODE 2 訊息與推導後端點 70–110],
   check[MODE 1 每次只微調 1°；MODE 2 直達安全端點],
 )
 
@@ -82,7 +82,7 @@
 #box_note(height: 0.82cm)
 
 #section[3. 最小／最大角度記錄]
-#text(size: 8.2pt)[目前韌體端點常數：#raw("SERVO_MIN_ANGLE=70")、#raw("SERVO_MAX_ANGLE=110")。下表填「實測安全值」；若碰撞、拉扯、異音或超出安全範圍，立即回中心並縮小端點。]
+#text(size: 8.2pt)[目前韌體以 #raw("SERVO_X_CENTER=90") 與 #raw("SERVO_LIMIT_OFFSET_DEG=20") 推導端點為 70～110。下表填「實測安全值」；若碰撞、拉扯、異音或超出安全範圍，立即回中心並縮小 offset。]
 
 #align(center)[
   #table(
@@ -108,8 +108,8 @@
     inset: 3.2pt,
     stroke: 0.5pt + gray,
     ccell[項目], ccell[目前值], ccell[本次實測安全值], ccell[完整常數列],
-    ccell[#raw("SERVO_MIN_ANGLE")], [70], [], [#raw("constexpr int SERVO_MIN_ANGLE = _____;")],
-    ccell[#raw("SERVO_MAX_ANGLE")], [110], [], [#raw("constexpr int SERVO_MAX_ANGLE = _____;")],
+    ccell[#raw("SERVO_LIMIT_OFFSET_DEG")], [20], [], [#raw("constexpr int SERVO_LIMIT_OFFSET_DEG = _____;")],
+    ccell[#raw("推導端點")], [70～110], [], [#raw("SERVO_X_CENTER ± SERVO_LIMIT_OFFSET_DEG")],
   )
 ]
 
@@ -124,7 +124,7 @@
     align: (center, left, center),
     ccell[順序], ccell[操作步驟], ccell[完成],
     ccell[1], [確認平台已置中，球盤、連桿與伺服在安全範圍內。], [□],
-    ccell[2], [在韌體填入並儲存本單記錄的 #raw("SERVO_X_CENTER")／#raw("SERVO_Y_CENTER") 與端點參數。], [□],
+    ccell[2], [在韌體填入並儲存本單記錄的 #raw("SERVO_X_CENTER")／#raw("SERVO_Y_CENTER") 與 #raw("SERVO_LIMIT_OFFSET_DEG")。], [□],
     ccell[3], [重新燒錄 Arduino Nano。], [□],
     ccell[4], [重新開機，確認平台水平且沒有異音、拉扯或卡住。], [□]
   )

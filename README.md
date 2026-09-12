@@ -84,12 +84,12 @@ Arduino_Nano_Ball_Balance_Joystick_Modes/
 | 模式 | 每次動作 |
 | --- | --- |
 | MODE1 | 選定軸 ±1°；用於找平台水平。 |
-| MODE2 | 直接前往 70° 或 110° 端點；只在空載、隨時可斷電時使用。 |
+| MODE2 | 直接前往推導後的 MIN / MAX 端點；目前中心 90、範圍 ±20，為 70° / 110°。只在空載、隨時可斷電時使用。 |
 
 建議做法：
 
 1. 平台空載，以 MODE1 逐步找到水平位置。
-2. 切 MODE2，逐一測試四個端點；若有卡住風險，立刻縮小 `SERVO_MIN_ANGLE` / `SERVO_MAX_ANGLE`。
+2. 切 MODE2，逐一測試四個端點；若有卡住風險，立刻縮小 `SERVO_LIMIT_OFFSET_DEG`。
 3. 在 Arduino Serial Monitor 設為 **115200 baud**、行尾選擇 Newline，輸入：
 
    ```text
@@ -97,7 +97,7 @@ Arduino_Nano_Ball_Balance_Joystick_Modes/
    SHOW
    ```
 
-   `SETC` 將目前角度設為測試中心；`SHOW` 印出可複製的 `SERVO_X_CENTER`、`SERVO_Y_CENTER` 常數。把輸出值寫回 `.ino` 頂端的同名常數，再重新燒錄，中心值才會永久保存。
+   `SETC` 將目前角度設為測試中心；`SHOW` 印出可複製的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_LIMIT_OFFSET_DEG` 常數，並顯示推導後的 MIN/MAX 端點。把輸出值寫回 `.ino` 頂端的同名常數，再重新燒錄，中心與安全行程才會永久保存。
 
 ### 3. 安裝並校正攝影機
 
@@ -147,7 +147,7 @@ Serial Monitor 設定為 **115200 baud**，行尾選擇 Newline。
 | `STATUS` | 顯示目前 Servo、中心、模式與搖桿 armed 狀態。 |
 | `SETC` | 將目前兩軸 Servo 角度設成測試中心。 |
 | `SETCX` / `SETCY` | 僅設定目前 X / Y 的測試中心。 |
-| `SHOW` | 印出應複製回程式的中心與限幅常數。 |
+| `SHOW` | 印出應複製回程式的中心與 offset 常數，並顯示推導後的限幅端點。 |
 | `CENTER` | 兩軸回到目前測試中心。 |
 | `MODE,1` / `MODE,2` | 從 Serial 選擇 MODE1 微調或 MODE2 端點模式。 |
 | `STEP,1` | 從 Serial 選擇 MODE1 的 1° 微調。 |

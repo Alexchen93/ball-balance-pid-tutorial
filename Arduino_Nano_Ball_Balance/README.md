@@ -17,7 +17,7 @@ Servo 必須使用獨立、足夠電流的 5–6 V BEC／DC-DC 供電，且其 G
 
 1. 安裝 Arduino Library Manager 的 `Servo`。
 2. 燒錄 `Arduino_Nano_Ball_Balance.ino` 到 Arduino Nano（115200 baud）。若舊款 Nano 無法燒錄，選擇 `ATmega328P (Old Bootloader)`。
-3. 先讓平台空載，校正程式頂端的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_MIN_ANGLE`、`SERVO_MAX_ANGLE`。
+3. 先讓平台空載，依校正程式 SETC / SHOW 與學習單結果，回填正式 PID 檔開頭「學生校正參數（校正完成後只修改本區）」中的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_LIMIT_OFFSET_DEG`；`SERVO_MIN_ANGLE` / `SERVO_MAX_ANGLE` 會由 X 中心 ± offset 推導。目前中心 90、範圍 ±20，推導為 70～110。
 4. 以小角度測試每軸，若平台修正方向相反，將對應 `SERVO_*_DIRECTION` 改為 `-1`。
 5. 完成 Desktop 攝影機的四角校正與球色取樣後，才從 Desktop 視窗按 `r` 開始 PID。
 

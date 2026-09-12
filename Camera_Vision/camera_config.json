@@ -10,28 +10,28 @@
     "height_mm": 180.0,
     "corners_px": [
       [
-        154.0,
-        353.0
+        616.0,
+        351.0
       ],
       [
-        561.0,
-        390.0
-      ],
-      [
-        500.0,
-        229.0
-      ],
-      [
-        229.0,
+        466.0,
         204.0
+      ],
+      [
+        172.0,
+        205.0
+      ],
+      [
+        45.0,
+        351.0
       ]
     ]
   },
   "ball_hsv": {
-    "hue": 30,
+    "hue": 15,
     "hue_tolerance": 12,
-    "saturation_min": 80,
-    "value_min": 80
+    "saturation_min": 20,
+    "value_min": 125
   },
   "detection": {
     "min_radius_px": 4.0,
@@ -43,5 +43,11 @@
     "baudrate": 115200,
     "update_hz": 30,
     "lost_heartbeat_hz": 5
+  },
+  "control": {
+    "zero_reference_mm": [
+      0.46,
+      10.71
+    ]
   }
 }

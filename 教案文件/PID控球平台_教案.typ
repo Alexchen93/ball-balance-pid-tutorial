@@ -154,7 +154,7 @@
   cell([學生參數區], align: center), cell([說明核心程式已由教師完成，指出後續學生主要修改的 Kp、Ki、Kd 區域。]), cell([在程式中找到可調整參數位置。]), cell([5 分鐘], align: center),
   cell([校正程式燒錄], align: center), cell([示範教師提供之 Calibration 程式與 Serial 115200 訊息。]), cell([完成燒錄並確認雙模式校正啟動。]), cell([6 分鐘], align: center),
   cell([Servo 中立與方向], align: center), cell([使用 MODE 1 微調 1° 檢查 X/Y 軸中立角與正負方向。]), cell([觀察平台反應並記錄 PASS/FAIL。]), cell([10 分鐘], align: center),
-  cell([安全輸出範圍], align: center), cell([短按 SW 切換 MODE 2 端點 70–110，長按回中心。]), cell([確認平台不碰撞、不超出安全範圍。]), cell([5 分鐘], align: center),
+  cell([安全輸出範圍], align: center), cell([短按 SW 切換 MODE 2；目前中心 90、範圍 ±20，端點推導為 70–110，長按回中心。]), cell([確認平台不碰撞、不超出安全範圍。]), cell([5 分鐘], align: center),
   cell([攝影機校正], align: center), cell([示範球體辨識與平台四角校正。]), cell([完成球體與平台座標校正。]), cell([7 分鐘], align: center),
   cell([X/Y 座標確認], align: center), cell([移動球體並示範座標及控制方向判讀。]), cell([觀察 Serial 資料並確認 X/Y 方向。]), cell([5 分鐘], align: center),
   cell([Calibration PASS], align: center), cell([依校正檢核表確認所有項目。]), cell([完成校正紀錄，通過者進入 PID 調參。]), cell([5 分鐘], align: center),

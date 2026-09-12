@@ -22,15 +22,28 @@
 constexpr uint8_t SERVO_X_PIN = 9;
 constexpr uint8_t SERVO_Y_PIN = 10;
 constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
-// Mechanical calibration: set these before enabling RUN on the real platform.
-constexpr int SERVO_X_CENTER = 90;
-constexpr int SERVO_Y_CENTER = 90;
-constexpr int SERVO_MIN_ANGLE = 82;
-constexpr int SERVO_MAX_ANGLE = 98;
-constexpr int SERVO_X_DIRECTION = 1;  // Change to -1 if the X correction is reversed.
+// ===== 學生校正參數（校正完成後只修改本區） =====
+// 來源：校正程式的 SETC / SHOW 結果與學習單紀錄。
+// 注意：本次 JOYMOVE / TESTSTAT 觀測到 X=71、Y=76，只代表測試當下的輸出角度，
+// 不可當作正式 PID 的機構中心值。正式 PID 請只轉填/調整下列中心與安全行程常數。
+// 安全限制：中心應落在 SERVO_MIN_ANGLE 到 SERVO_MAX_ANGLE 之間，端點不可超出機構安全範圍。
+// X 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填；本教案最終中心採 90 度。
+constexpr int SERVO_X_CENTER = 74;
+// Y 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填；本教案最終中心採 90 度。
+constexpr int SERVO_Y_CENTER = 76;
+// X 中心左右可移動的安全範圍。目前端點是 X中心90 ±20，推導為 70～110 度；
+// 調整 OFFSET 即可改安全行程，不需要手算端點。
+// 若未來 X/Y 中心分開，須確認共用範圍仍適用，避免暗中改變 PID 行為。
+constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
+constexpr int SERVO_MIN_ANGLE = SERVO_X_CENTER - SERVO_LIMIT_OFFSET_DEG;
+constexpr int SERVO_MAX_ANGLE = SERVO_X_CENTER + SERVO_LIMIT_OFFSET_DEG;
+// ===== 學生校正參數結束 =====
+
+constexpr int SERVO_X_DIRECTION = -1; // 已依左右邊緣實測反轉；若球被推向同側，再改回 1。
 constexpr int SERVO_Y_DIRECTION = 1;  // Change to -1 if the Y correction is reversed.
 
-constexpr float POSITION_LIMIT_MM = 150.0f;
+constexpr float POSITION_LIMIT_X_MM = 260.0f;  // 240 mm platform width + margin
+constexpr float POSITION_LIMIT_Y_MM = 200.0f;  // 180 mm platform height + margin
 constexpr float PID_OUTPUT_LIMIT_DEG = 8.0f;
 constexpr float PID_INTEGRAL_LIMIT = 60.0f;
 constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
@@ -135,6 +148,7 @@ const char *linkStateName(LinkState state) {
 }
 
 void writeNeutralServos() {
+  // 中心與安全端點統一使用上方「學生校正參數」，不要在其他地方重複硬編碼角度。
   servoAngleX = constrain(SERVO_X_CENTER, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
   servoAngleY = constrain(SERVO_Y_CENTER, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
   servoX.write(servoAngleX);
@@ -189,7 +203,7 @@ bool parseUnsigned(const char *text, uint32_t &value) {
 
 void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
   (void)cameraTimestampMs;  // Nano uses arrival time for its real PID delta-time.
-  if (fabs(x) > POSITION_LIMIT_MM || fabs(y) > POSITION_LIMIT_MM) {
+  if (fabs(x) > POSITION_LIMIT_X_MM || fabs(y) > POSITION_LIMIT_Y_MM) {
     Serial.println(F("ERROR,POSITION_OUT_OF_RANGE"));
     stopControl(POSITION_RANGE_ERROR);
     return;
@@ -207,6 +221,7 @@ void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
 }
 
 void updateServos() {
+  // PID 輸出只疊加到集中校正區的中心角度，端點限制也只引用同一組常數。
   const float requestedX = SERVO_X_CENTER + SERVO_X_DIRECTION * outputX;
   const float requestedY = SERVO_Y_CENTER + SERVO_Y_DIRECTION * outputY;
   servoAngleX = constrain((int)round(requestedX), SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
@@ -309,7 +324,7 @@ void processCommand(char *line) {
   } else if (strcmp(command, "TARGET") == 0) {
     float x, y;
     if (parseFloat(strtok(NULL, ","), x) && parseFloat(strtok(NULL, ","), y) &&
-        strtok(NULL, ",") == NULL && fabs(x) <= POSITION_LIMIT_MM && fabs(y) <= POSITION_LIMIT_MM) {
+        strtok(NULL, ",") == NULL && fabs(x) <= POSITION_LIMIT_X_MM && fabs(y) <= POSITION_LIMIT_Y_MM) {
       targetX = x;
       targetY = y;
       Serial.println(F("TARGET,OK"));
