@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ import serial
 from serial.tools import list_ports
 
 
-WINDOW_NAME = "Ball vision: READY checklist | b=HSV c=platform d=zero r=RUN q=quit"
+WINDOW_NAME = "Ball vision: READY checklist | b=HSV c=platform d=zero r=RUN p=READY q=quit"
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -47,7 +48,7 @@ class NanoTransport:
         return self.connection is not None
 
     @staticmethod
-    def _candidate_ports() -> tuple[list[str], list[str]]:
+    def _candidate_ports() -> tuple[list[str], list[str], list[str]]:
         markers = ("arduino", "ch340", "cp210", "usb serial", "ftdi")
         metadata = {
             port.device: f"{port.description or ''} {port.manufacturer or ''}".lower()
@@ -56,15 +57,25 @@ class NanoTransport:
         visible = set(metadata)
         visible.update(glob.glob("/dev/ttyUSB*"))
         visible.update(glob.glob("/dev/ttyACM*"))
-        visible_ports = sorted(
+        all_ports = sorted(
             device for device in visible if device.startswith(("/dev/ttyUSB", "/dev/ttyACM"))
         )
+        blocked_ports = [device for device in all_ports if not os.access(device, os.R_OK | os.W_OK)]
+        visible_ports = [device for device in all_ports if os.access(device, os.R_OK | os.W_OK)]
         likely_ports = [
             device for device in visible_ports if any(marker in metadata.get(device, "") for marker in markers)
         ]
-        return visible_ports, likely_ports
+        return visible_ports, likely_ports, blocked_ports
 
     def _connect(self, port: str) -> bool:
+        if not os.access(port, os.R_OK | os.W_OK):
+            self.connection = None
+            self.last_telemetry = f"Nano port permission blocked: {port}"
+            print(
+                f"NANO CONNECT ERROR ({port}): current user cannot read/write this device. "
+                "Check serial group membership or udev rules, then replug Nano."
+            )
+            return False
         try:
             connection = serial.Serial(port, baudrate=self.baudrate, timeout=0, write_timeout=0.2)
             self.connection = connection
@@ -86,19 +97,29 @@ class NanoTransport:
         if self.connection is not None:
             print("Nano is already connected.")
             return True
-        visible_ports, likely_ports = self._candidate_ports()
+        visible_ports, likely_ports, blocked_ports = self._candidate_ports()
         if len(likely_ports) == 1:
             print(f"Searching Nano: using unique USB-serial candidate {likely_ports[0]}")
             return self._connect(likely_ports[0])
         if len(visible_ports) == 1:
-            print(f"Searching Nano: using only visible USB-serial device {visible_ports[0]}")
+            print(f"Searching Nano: using only usable USB-serial device {visible_ports[0]}")
             return self._connect(visible_ports[0])
         if not visible_ports:
-            self.last_telemetry = "No USB serial; press n to retry."
-            print("NANO SEARCH: no /dev/ttyUSB* or /dev/ttyACM* found. Plug Nano in, then press n to retry.")
+            if blocked_ports:
+                self.last_telemetry = "USB serial exists, but permission is blocked; press n after fixing it."
+                print(
+                    "NANO SEARCH: USB serial device exists but is not readable/writable by this user: "
+                    + ", ".join(blocked_ports)
+                )
+                print("Fix serial group membership or udev rules, replug Nano, then press n to retry.")
+            else:
+                self.last_telemetry = "No USB serial; press n to retry."
+                print("NANO SEARCH: no /dev/ttyUSB* or /dev/ttyACM* found. Plug Nano in, then press n to retry.")
         else:
             self.last_telemetry = "Multiple USB serial devices; press n after selecting one."
-            print(f"NANO SEARCH: multiple candidates: {', '.join(visible_ports)}")
+            print(f"NANO SEARCH: multiple usable candidates: {', '.join(visible_ports)}")
+            if blocked_ports:
+                print(f"Ignored permission-blocked devices: {', '.join(blocked_ports)}")
             print("Disconnect other USB serial devices, then press n to retry; use --serial-port only for manual override.")
         return False
 
@@ -114,9 +135,10 @@ class NanoTransport:
             self.close(send_ready=False)
             return False
 
-    def poll(self) -> None:
+    def poll(self) -> list[str]:
+        events: list[str] = []
         if self.connection is None:
-            return
+            return events
         try:
             while self.connection.in_waiting:
                 line = self.connection.readline().decode("ascii", errors="replace").strip()
@@ -129,6 +151,8 @@ class NanoTransport:
                     # Keep setup quiet: print one status when READY changes, then
                     # stream live servo feedback only after the user presses r.
                     controller_state = parts[1]
+                    if controller_state != "RUN":
+                        events.append(f"STATE,{controller_state}")
                     if controller_state == "RUN" or controller_state != self.last_terminal_controller_state:
                         print(
                             "SERVO"
@@ -142,11 +166,14 @@ class NanoTransport:
                     self.last_terminal_controller_state = controller_state
                 else:
                     self.last_telemetry = line
+                    if line.startswith(("ERROR,", "STATE,", "POS,OK")):
+                        events.append(line)
                     print(f"NANO {line}")
         except (OSError, serial.SerialException) as error:
             self.last_telemetry = f"Nano link lost: {error}"
             print(f"NANO READ ERROR: {error}. Press n to reconnect.")
             self.close(send_ready=False)
+        return events
 
     def close(self, send_ready: bool = True) -> None:
         if self.connection is None:
@@ -182,6 +209,8 @@ class BallVision:
         self.latest_hsv: np.ndarray | None = None
         self.corner_labels = ("top-left", "top-right", "bottom-right", "bottom-left")
         self.pid_running = False
+        self.run_start_phase: str | None = None
+        self.run_start_deadline = 0.0
         self.last_sent_at = 0.0
         self.last_lost_at = 0.0
         self.latest_position: tuple[float, float] | None = None
@@ -228,7 +257,7 @@ class BallVision:
         if self.mode == "zero":
             return "D: click the place where the ball should rest at X=0 Y=0."
         if self._ready_complete():
-            return "READY complete. Press R to start RUN; B/C/D recalibrate."
+            return "READY complete. Press R to start RUN; P stays READY; B/C/D recalibrate."
         if not self._has_ball_hsv():
             return "Next: press B, then click the ball centre for HSV."
         if not self._has_platform():
@@ -246,6 +275,7 @@ class BallVision:
 
     def _apply_saved_config(self) -> None:
         self.pid_running = False
+        self.run_start_phase = None
         self.transport.send("READY")
         self.config = load_config(self.config_path)
         self.corners = [tuple(point) for point in self.config["platform"].get("corners_px", [])]
@@ -309,6 +339,13 @@ class BallVision:
         _, center, radius = max(candidates, key=lambda item: item[0])
         return center, radius
 
+    def _send_position_command(self, position: tuple[float, float]) -> bool:
+        timestamp_ms = int(time.monotonic() * 1000)
+        sent = self.transport.send(f"POS,{position[0]:.2f},{position[1]:.2f},{timestamp_ms}")
+        if sent:
+            self.last_sent_at = time.monotonic()
+        return sent
+
     def _send_position(self, position: tuple[float, float] | None) -> None:
         # Calibration may run while connected, but no live position commands are
         # sent until r explicitly starts PID control.
@@ -322,11 +359,65 @@ class BallVision:
                 self.transport.send("LOST")
                 self.last_lost_at = now
             return
-        interval = 1.0 / float(transport_settings["update_hz"])
-        if now - self.last_sent_at >= interval:
-            timestamp_ms = int(time.monotonic() * 1000)
-            self.transport.send(f"POS,{position[0]:.2f},{position[1]:.2f},{timestamp_ms}")
-            self.last_sent_at = now
+        self._send_position_command(position)
+
+    def _safe_ready(self, message: str) -> None:
+        was_active = self.pid_running or self.run_start_phase is not None
+        self.pid_running = False
+        self.run_start_phase = None
+        self.filtered_position = None
+        self.last_sent_at = 0.0
+        self.last_lost_at = 0.0
+        self.transport.send("READY")
+        if was_active:
+            print(message)
+        else:
+            print("Already READY. P keeps Nano in READY; no POS/LOST/servo commands are being sent.")
+
+    def _request_run(self, position: tuple[float, float]) -> None:
+        if not self._send_position_command(position):
+            print("Cannot RUN: failed to send fresh POS to Nano. Press n to reconnect, then R again.")
+            return
+        self.run_start_phase = "wait_pos_ack"
+        self.run_start_deadline = time.monotonic() + 0.6
+        print("RUN requested: sent fresh POS for this frame; Nano ACK will trigger a final POS immediately followed by RUN.")
+
+    def _handle_nano_events(self) -> None:
+        for nano_event in self.transport.poll():
+            if self.run_start_phase == "wait_pos_ack":
+                if nano_event.startswith("POS,OK"):
+                    position = self.latest_position
+                    if position is None:
+                        self._safe_ready("RUN cancelled: ball was lost before Nano ACK. Keep it visible, then press R again.")
+                        continue
+                    if not self._send_position_command(position):
+                        self._safe_ready("RUN cancelled: failed to send final fresh POS immediately before RUN. Press n to reconnect, then R again.")
+                        continue
+                    self.transport.send("RUN")
+                    self.run_start_phase = "wait_run_ack"
+                    self.run_start_deadline = time.monotonic() + 0.6
+                    print("Nano confirmed POS,OK; resent latest fresh POS immediately followed by RUN. Waiting for STATE,RUN.")
+                    continue
+                if nano_event.startswith("ERROR,"):
+                    self._safe_ready(f"RUN cancelled by Nano ({nano_event}). Back to READY.")
+                    continue
+            if self.run_start_phase == "wait_run_ack":
+                if nano_event == "STATE,RUN":
+                    self.pid_running = True
+                    self.run_start_phase = None
+                    self.last_sent_at = 0.0
+                    self.last_lost_at = 0.0
+                    print("RUN confirmed by Nano. Python is now sending fresh POS every camera frame.")
+                    continue
+                if nano_event.startswith("ERROR,"):
+                    self._safe_ready(f"RUN rejected by Nano ({nano_event}). Back to READY.")
+                    continue
+            if self.pid_running and (nano_event.startswith("ERROR,") or nano_event == "STATE,READY"):
+                self._safe_ready(f"RUN stopped by Nano ({nano_event}). Back to READY; fix the reported condition before pressing R again.")
+                break
+        if self.run_start_phase is not None and time.monotonic() > self.run_start_deadline:
+            phase = self.run_start_phase
+            self._safe_ready(f"RUN handshake timed out while waiting for Nano {phase}; Back to READY. Check serial RX/TX and Nano firmware protocol before pressing R again.")
 
     def _draw_overlay(self, frame: np.ndarray, ball: tuple[tuple[float, float], float] | None,
                       position: tuple[float, float] | None) -> np.ndarray:
@@ -342,14 +433,19 @@ class BallVision:
             cv2.circle(overlay, (round(center[0]), round(center[1])), round(radius), (0, 255, 0), 2)
             cv2.circle(overlay, (round(center[0]), round(center[1])), 3, (0, 0, 255), -1)
 
-        run_state = "RUN" if self.pid_running else ("READY COMPLETE" if self._ready_complete() else "READY SETUP")
+        if self.pid_running:
+            run_state = "RUN"
+        elif self.run_start_phase is not None:
+            run_state = "RUN START: waiting for Nano ACK"
+        else:
+            run_state = "READY COMPLETE" if self._ready_complete() else "READY SETUP"
         nano_status = "NANO: CONNECTED" if self.transport.is_connected else "NANO: DISCONNECTED (press n to search)"
         items = self._ready_items()
         checklist = "  ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in items.items())
         if self.pid_running:
             position_text = "BALL: LOST" if position is None else f"BALL: X={position[0]:+.1f} mm  Y={position[1]:+.1f} mm"
         else:
-            position_text = "READY: no POS/LOST/servo commands are sent"
+            position_text = "READY: P=hold READY; no POS/LOST/servo commands are sent"
         lines = [
             f"STATE: {run_state}",
             nano_status,
@@ -425,20 +521,17 @@ class BallVision:
         if key in (ord("q"), 27):
             return False
         if key == ord("n"):
-            self.pid_running = False
-            self.transport.send("READY")
+            self._safe_ready("Stopped for Nano search. Back to READY; no live position or servo commands are being sent.")
             self.mode = "normal"
             self.transport.search_and_connect()
         elif key == ord("a"):
             self._apply_saved_config()
         elif key == ord("b"):
-            self.pid_running = False
-            self.transport.send("READY")
+            self._safe_ready("B selected. Back to READY; no live position or servo commands are being sent.")
             self.mode = "ball_colour"
             print("B: click the centre of the ball. Only HSV colour will be saved.")
         elif key == ord("c"):
-            self.pid_running = False
-            self.transport.send("READY")
+            self._safe_ready("C selected. Back to READY; no live position or servo commands are being sent.")
             self.corners = []
             self.homography = None
             self.filtered_position = None
@@ -447,18 +540,19 @@ class BallVision:
             self.mode = "corners"
             print("C: click platform corners in order: top-left, top-right, bottom-right, bottom-left.")
         elif key == ord("d"):
-            self.pid_running = False
-            self.transport.send("READY")
+            self._safe_ready("D selected. Back to READY; no live position or servo commands are being sent.")
             if self.homography is None:
                 print("D needs platform border first: press C and click all four corners.")
             else:
                 self.mode = "zero"
                 print("D: click the place where the ball should rest. That point becomes X=0, Y=0.")
-        elif key == ord("r"):
+        elif key in (ord("p"), ord("P")):
+            self._safe_ready("P pressed. Back to READY; sent READY and stopped live POS/LOST/servo control.")
+        elif key in (ord("r"), ord("R")):
             if self.pid_running:
-                self.pid_running = False
-                self.transport.send("READY")
-                print("RUN stopped. Back to READY; no live position or servo commands are being sent.")
+                self._safe_ready("R pressed during RUN. Back to READY; no live position or servo commands are being sent.")
+            elif self.run_start_phase is not None:
+                print("RUN is already waiting for Nano ACK. Press P to cancel safely back to READY.")
             elif self.mode != "normal":
                 print("Cannot RUN: finish the active READY step first, or press A to apply saved config.")
             elif not self.transport.is_connected:
@@ -469,11 +563,7 @@ class BallVision:
             elif self.latest_position is None:
                 print("Cannot RUN: ball is not detected yet. Keep it visible, then press R again.")
             else:
-                self.pid_running = True
-                self.last_sent_at = 0.0
-                self.last_lost_at = 0.0
-                self.transport.send("RUN")
-                print("RUN started by explicit R. Live position and servo control are now enabled.")
+                self._request_run(self.latest_position)
         return True
 
     def run(self, camera_index: int, width: int, height: int, requested_fps: int, max_frames: int) -> None:
@@ -486,7 +576,7 @@ class BallVision:
         if not self.headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
             cv2.setMouseCallback(WINDOW_NAME, self._mouse_callback)
-            print("GUIDE: READY checklist uses A=apply saved config, B=HSV, C=platform TL/TR/BR/BL, D=zero point, R=RUN, Q=quit.")
+            print("GUIDE: READY checklist uses A=apply saved config, B=HSV, C=platform TL/TR/BR/BL, D=zero point, R=RUN, P=READY/pause, Q=quit.")
             self._print_ready_checklist()
 
         frame_count = 0
@@ -516,8 +606,8 @@ class BallVision:
                     self.filtered_position = None
                 self.latest_position = position
                 self._send_position(position)
-                if self.pid_running:
-                    self.transport.poll()
+                if self.pid_running or self.run_start_phase is not None:
+                    self._handle_nano_events()
                 if not self.headless:
                     cv2.imshow(WINDOW_NAME, self._draw_overlay(frame, ball, position))
                     if not self.handle_key(cv2.waitKey(1) & 0xFF):

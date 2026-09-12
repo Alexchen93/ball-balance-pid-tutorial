@@ -7,6 +7,8 @@
  *   RUN | READY | TARGET,<x_mm>,<y_mm>
  *   PIDX,<kp>,<ki>,<kd> | PIDY,<kp>,<ki>,<kd> | PING
  *
+ * POS replies with POS,OK,<age_ms> after the Nano accepts a fresh in-range sample.
+ * RUN must be immediately preceded by a fresh accepted POS; READY stops PID and returns servos to neutral.
  * Nano telemetry (10 Hz):
  *   TEL,<state>,<link>,<x>,<y>,<error_x>,<error_y>,<u_x>,<u_y>,<servo_x>,<servo_y>,<age_ms>
  *
@@ -218,6 +220,7 @@ void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
     controllerState = READY;
     Serial.println(F("STATE,READY"));
   }
+  Serial.println(F("POS,OK,0"));
 }
 
 void updateServos() {
@@ -290,7 +293,7 @@ void updateStatusLed() {
 }
 
 void printHelp() {
-  Serial.println(F("PC protocol: POS,x,y,timestamp | LOST | RUN | READY"));
+  Serial.println(F("PC protocol: POS,x,y,timestamp -> POS,OK | final POS immediately before RUN | LOST | READY"));
   Serial.println(F("TARGET,x,y | PIDX,kp,ki,kd | PIDY,kp,ki,kd | PING"));
 }
 
@@ -321,6 +324,8 @@ void processCommand(char *line) {
     }
   } else if (strcmp(command, "READY") == 0 && strtok(NULL, ",") == NULL) {
     stopControl(positionIsFresh() ? LINK_OK : LINK_WAIT);
+    Serial.print(F("STATE,"));
+    Serial.println(controllerStateName(controllerState));
   } else if (strcmp(command, "TARGET") == 0) {
     float x, y;
     if (parseFloat(strtok(NULL, ","), x) && parseFloat(strtok(NULL, ","), y) &&
