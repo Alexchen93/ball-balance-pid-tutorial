@@ -54,6 +54,7 @@ q) 離開
 
 開啟後一律停在 READY checklist：A 套用設定、B 點球心 HSV、C 依 TL→TR→BR→BL 點平台四角、D 點平衡零點。
 只有三項完成且沒有正在進行的步驟時，才可按 R 進 RUN。
+新版 Nano 對合法 POS 會回 POS,OK；若已燒錄舊版沒有 POS,OK，Python 會用座標相符且新鮮的 TEL,READY,OK 相容啟動，但正式建議重燒最新版 .ino。
 GUIDE
   read -r -p "請選擇 [1/2/q]：" choice
   case "$choice" in

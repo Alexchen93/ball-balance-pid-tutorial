@@ -7,7 +7,7 @@
  *   RUN | READY | TARGET,<x_mm>,<y_mm>
  *   PIDX,<kp>,<ki>,<kd> | PIDY,<kp>,<ki>,<kd> | PING
  *
- * POS replies with POS,OK,<age_ms> after the Nano accepts a fresh in-range sample.
+ * POS replies with POS,OK after the Nano accepts a fresh in-range sample.
  * RUN must be immediately preceded by a fresh accepted POS; READY stops PID and returns servos to neutral.
  * Nano telemetry (10 Hz):
  *   TEL,<state>,<link>,<x>,<y>,<error_x>,<error_y>,<u_x>,<u_y>,<servo_x>,<servo_y>,<age_ms>
@@ -220,7 +220,7 @@ void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
     controllerState = READY;
     Serial.println(F("STATE,READY"));
   }
-  Serial.println(F("POS,OK,0"));
+  Serial.println(F("POS,OK"));
 }
 
 void updateServos() {

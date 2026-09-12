@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import sys
 import time
@@ -135,6 +136,16 @@ class NanoTransport:
             self.close(send_ready=False)
             return False
 
+    def discard_pending_input(self) -> None:
+        if self.connection is None:
+            return
+        try:
+            self.connection.reset_input_buffer()
+        except (OSError, serial.SerialException) as error:
+            self.last_telemetry = f"Nano link lost: {error}"
+            print(f"NANO READ ERROR: {error}. Press n to reconnect.")
+            self.close(send_ready=False)
+
     def poll(self) -> list[str]:
         events: list[str] = []
         if self.connection is None:
@@ -148,6 +159,7 @@ class NanoTransport:
                 parts = line.split(",")
                 if len(parts) == 12 and parts[0] == "TEL":
                     self.last_telemetry = line
+                    events.append(line)
                     # Keep setup quiet: print one status when READY changes, then
                     # stream live servo feedback only after the user presses r.
                     controller_state = parts[1]
@@ -211,6 +223,7 @@ class BallVision:
         self.pid_running = False
         self.run_start_phase: str | None = None
         self.run_start_deadline = 0.0
+        self.run_start_ack_position: tuple[float, float] | None = None
         self.last_sent_at = 0.0
         self.last_lost_at = 0.0
         self.latest_position: tuple[float, float] | None = None
@@ -365,6 +378,7 @@ class BallVision:
         was_active = self.pid_running or self.run_start_phase is not None
         self.pid_running = False
         self.run_start_phase = None
+        self.run_start_ack_position = None
         self.filtered_position = None
         self.last_sent_at = 0.0
         self.last_lost_at = 0.0
@@ -375,28 +389,54 @@ class BallVision:
             print("Already READY. P keeps Nano in READY; no POS/LOST/servo commands are being sent.")
 
     def _request_run(self, position: tuple[float, float]) -> None:
+        self.transport.discard_pending_input()
         if not self._send_position_command(position):
             print("Cannot RUN: failed to send fresh POS to Nano. Press n to reconnect, then R again.")
             return
         self.run_start_phase = "wait_pos_ack"
+        self.run_start_ack_position = position
         self.run_start_deadline = time.monotonic() + 0.6
-        print("RUN requested: sent fresh POS for this frame; Nano ACK will trigger a final POS immediately followed by RUN.")
+        print("RUN requested: sent fresh POS for this frame; POS,OK or matching TEL,READY,OK will trigger a final POS immediately followed by RUN.")
+
+    def _is_implicit_pos_ack(self, nano_event: str) -> bool:
+        if self.run_start_ack_position is None:
+            return False
+        parts = nano_event.split(",")
+        if len(parts) != 12 or parts[:3] != ["TEL", "READY", "OK"]:
+            return False
+        try:
+            telemetry_x = float(parts[3])
+            telemetry_y = float(parts[4])
+            age_ms = float(parts[11])
+        except ValueError:
+            return False
+        if not all(math.isfinite(value) for value in (telemetry_x, telemetry_y, age_ms)):
+            return False
+        sent_x, sent_y = self.run_start_ack_position
+        return age_ms <= 500.0 and abs(telemetry_x - sent_x) <= 2.0 and abs(telemetry_y - sent_y) <= 2.0
+
+    def _send_final_pos_and_run(self, ack_label: str) -> None:
+        position = self.latest_position
+        if position is None:
+            self._safe_ready("RUN cancelled: ball was lost before Nano ACK. Keep it visible, then press R again.")
+            return
+        if not self._send_position_command(position):
+            self._safe_ready("RUN cancelled: failed to send final fresh POS immediately before RUN. Press n to reconnect, then R again.")
+            return
+        self.transport.send("RUN")
+        self.run_start_phase = "wait_run_ack"
+        self.run_start_ack_position = None
+        self.run_start_deadline = time.monotonic() + 0.6
+        print(f"Nano accepted initial POS via {ack_label}; resent latest fresh POS immediately followed by RUN. Waiting for STATE,RUN.")
 
     def _handle_nano_events(self) -> None:
         for nano_event in self.transport.poll():
             if self.run_start_phase == "wait_pos_ack":
                 if nano_event.startswith("POS,OK"):
-                    position = self.latest_position
-                    if position is None:
-                        self._safe_ready("RUN cancelled: ball was lost before Nano ACK. Keep it visible, then press R again.")
-                        continue
-                    if not self._send_position_command(position):
-                        self._safe_ready("RUN cancelled: failed to send final fresh POS immediately before RUN. Press n to reconnect, then R again.")
-                        continue
-                    self.transport.send("RUN")
-                    self.run_start_phase = "wait_run_ack"
-                    self.run_start_deadline = time.monotonic() + 0.6
-                    print("Nano confirmed POS,OK; resent latest fresh POS immediately followed by RUN. Waiting for STATE,RUN.")
+                    self._send_final_pos_and_run("POS,OK")
+                    continue
+                if self._is_implicit_pos_ack(nano_event):
+                    self._send_final_pos_and_run("TEL,READY,OK compatibility fallback")
                     continue
                 if nano_event.startswith("ERROR,"):
                     self._safe_ready(f"RUN cancelled by Nano ({nano_event}). Back to READY.")
@@ -417,6 +457,7 @@ class BallVision:
                 break
         if self.run_start_phase is not None and time.monotonic() > self.run_start_deadline:
             phase = self.run_start_phase
+            self.run_start_ack_position = None
             self._safe_ready(f"RUN handshake timed out while waiting for Nano {phase}; Back to READY. Check serial RX/TX and Nano firmware protocol before pressing R again.")
 
     def _draw_overlay(self, frame: np.ndarray, ball: tuple[tuple[float, float], float] | None,
