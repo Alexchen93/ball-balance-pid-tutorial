@@ -19,13 +19,17 @@ import serial
 from serial.tools import list_ports
 
 
-PID_TEST_LABEL = "PID TEST: P-only (I=0,D=0)"
-WINDOW_NAME = f"Ball vision: {PID_TEST_LABEL} | b=HSV c=platform d=zero r=RUN p=READY q=quit"
+CONTROL_AUTHORITY_LABEL = "PID SOURCE: Nano firmware only"
+WINDOW_NAME = f"Ball vision: {CONTROL_AUTHORITY_LABEL} | b=HSV c=platform d=zero r=RUN p=READY q=quit"
 
 
 def load_config(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as config_file:
-        return json.load(config_file)
+        config = json.load(config_file)
+    if "pid" in config:
+        config.pop("pid", None)
+        print("DEPRECATED CONFIG: ignored camera_config.json 'pid'; PID parameters are managed only by Nano firmware.")
+    return config
 
 
 def save_config(path: Path, config: dict[str, Any]) -> None:
@@ -232,34 +236,6 @@ class BallVision:
         self.last_frame_at = time.monotonic()
         self.fps = 0.0
         self._rebuild_homography()
-        self._apply_runtime_pid("startup")
-
-    def _pid_axis_settings(self, axis: str) -> tuple[float, float, float]:
-        settings = self.config.get("pid", {}).get(axis.lower(), {})
-        return (
-            float(settings["kp"]),
-            float(settings.get("ki", 0.0)),
-            float(settings.get("kd", 0.0)),
-        )
-
-    def _pid_summary(self) -> str:
-        x = self._pid_axis_settings("x")
-        y = self._pid_axis_settings("y")
-        return f"X P={x[0]:.2f} I={x[1]:.2f} D={x[2]:.2f}; Y P={y[0]:.2f} I={y[1]:.2f} D={y[2]:.2f}"
-
-    def _apply_runtime_pid(self, reason: str) -> None:
-        x = self._pid_axis_settings("x")
-        y = self._pid_axis_settings("y")
-        print(f"{PID_TEST_LABEL} [{reason}] {self._pid_summary()}")
-        if not self.transport.is_connected:
-            print("PID TEST: Nano disconnected; P-only values will be sent after reconnect/restart before RUN.")
-            return
-        sent_x = self.transport.send(f"PIDX,{x[0]:.4f},{x[1]:.4f},{x[2]:.4f}")
-        sent_y = self.transport.send(f"PIDY,{y[0]:.4f},{y[1]:.4f},{y[2]:.4f}")
-        if sent_x and sent_y:
-            print("PID TEST: sent PIDX/PIDY P-only override to Nano.")
-        else:
-            print("PID TEST: failed to send complete P-only override; stay READY and reconnect before RUN.")
 
     def _corner_order_problem(self) -> str | None:
         if len(self.corners) != 4:
@@ -390,7 +366,6 @@ class BallVision:
         self.mode = "normal"
         self._rebuild_homography()
         print("Saved camera_config.json applied.")
-        self._apply_runtime_pid("config apply")
         self._print_ready_checklist()
 
     def _platform_position(self, point: tuple[float, float]) -> tuple[float, float] | None:
@@ -478,7 +453,6 @@ class BallVision:
             print("Already READY. P keeps Nano in READY; no POS/LOST/servo commands are being sent.")
 
     def _request_run(self, position: tuple[float, float]) -> None:
-        self._apply_runtime_pid("RUN preflight")
         self.transport.discard_pending_input()
         if not self._send_position_command(position):
             print("Cannot RUN: failed to send fresh POS to Nano. Press n to reconnect, then R again.")
@@ -578,8 +552,7 @@ class BallVision:
         else:
             position_text = "READY: P=hold READY; no POS/LOST/servo commands are sent"
         lines = [
-            PID_TEST_LABEL,
-            f"PID: {self._pid_summary()}",
+            CONTROL_AUTHORITY_LABEL,
             f"STATE: {run_state}",
             nano_status,
             checklist,
@@ -711,7 +684,7 @@ class BallVision:
         if not self.headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
             cv2.setMouseCallback(WINDOW_NAME, self._mouse_callback)
-            print(f"GUIDE: {PID_TEST_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL/TR/BR/BL, D=zero point, R=RUN, P=READY/pause, Q=quit.")
+            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL/TR/BR/BL, D=zero point, R=RUN, P=READY/pause, Q=quit.")
             self._print_ready_checklist()
 
         frame_count = 0

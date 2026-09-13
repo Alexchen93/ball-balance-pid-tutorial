@@ -1,6 +1,6 @@
 # Desktop 攝影機：OpenCV 球體定位與 Nano PID 通訊
 
-`ball_vision.py` 從固定在平台正上方的 Desktop USB 攝影機取得影像，以 HSV 顏色追蹤球體；將球心透過四角透視校正轉為平台毫米座標，再以 USB Serial 傳送給 Arduino Nano。PID 和 Servo 安全保護全部在 Nano 韌體內執行。
+`ball_vision.py` 從固定在平台正上方的 Desktop USB 攝影機取得影像，以 HSV 顏色追蹤球體；將球心透過四角透視校正轉為平台毫米座標，再以 USB Serial 傳送給 Arduino Nano。PID 參數與 Servo 安全保護全部在 Nano 韌體內執行；Camera Vision 不保存、下發或覆寫 PID。
 
 ## 一次性安裝
 
@@ -49,11 +49,13 @@ python3 -m serial.tools.list_ports -v
 2. 先以 `--no-serial` 完成或確認 READY checklist，再接 Nano。
 3. Servo 電源必須是獨立 5–6 V，並和 Nano 共地。空載時確認兩軸中心角、方向與安全限幅。
 4. 先按 `r` 只測一個短暫、小幅的中心修正；若方向相反，立即按 `r` 停止並調整 Nano 的 `SERVO_*_DIRECTION`。
-5. 以 `Ki=0` 從小 `Kp` 開始，先單軸、後雙軸調參。不要直接套用其他機構的 PID 值。
+5. 以 Nano 韌體目前的 P-only 常數先做單軸、後雙軸測試。任何 PID 變更都必須修改並重新燒錄 `.ino`；重啟 Camera Vision 不會改變 Nano PID。
 
 ## 通訊與限制
 
 - 只有 RUN 中 PC 才會傳送 `POS,x_mm,y_mm,timestamp_ms`；找不到球時才會送 `LOST`。
+- Camera Vision 只管理 HSV、平台四角、零點與影像座標傳輸；舊 `camera_config.json` 的 `pid` 欄位會被視為 deprecated 並忽略。
+- `PIDX`/`PIDY` 不再是控制協定；新版 Nano 收到後會回 `ERROR,PID_MANAGED_BY_NANO`。
 - 最新正式 Nano 韌體成功接受合法 `POS` 時會回單行 `POS,OK`。若已燒錄的舊版韌體沒有 `POS,OK`，Python 在啟動 RUN 的初始 ACK 階段會相容接受座標相符且新鮮的 `TEL,READY,OK`，再送最後一筆 fresh `POS` 緊接 `RUN`；正式使用仍建議重燒最新版 `.ino`，讓協議一致。
 - 正式 Nano 韌體接受 X ±260 mm、Y ±200 mm 內的位置；需要更大平台時，同步調整 `Arduino_Nano_Ball_Balance.ino` 的 `POSITION_LIMIT_X_MM` / `POSITION_LIMIT_Y_MM`。
-- 相機偵測、平台尺寸與 Servo 機構尚未實測，PID 起始值只作低風險驗證，不能保證已能平衡。
+- 相機偵測、平台尺寸與 Servo 機構尚未實測，Nano 內建 P-only 起始值只作低風險驗證，不能保證已能平衡。

@@ -28,7 +28,7 @@ USB 攝影機 → OpenCV 球體辨識／透視校正 → USB Serial（POS / LOST
 | `Camera_Vision/ball_vision.py` | OpenCV 球體追蹤、透視轉換、Nano Serial 通訊與視窗互動。 |
 | `Camera_Vision/start_camera_vision.sh` | 啟動攝影機程式的便利腳本。 |
 | `Camera_Vision/requirements.txt` | Python 相依套件清單。 |
-| `Camera_Vision/camera_config.json` | 攝影機、平台尺寸／四角、球色 HSV 與 Serial 設定；會由校正操作更新。 |
+| `Camera_Vision/camera_config.json` | 攝影機、平台尺寸／四角、球色 HSV、零點與 Serial 設定；會由校正操作更新，不保存 PID。 |
 | `Camera_Vision/README.md` | 攝影機安裝、執行與視窗快捷鍵說明。 |
 | `3d列印檔案/` | 平台、Servo 固定座、鏡頭座等 3D 列印檔；目前依 `.gitignore` 不上傳。 |
 | `平衡球.txt` | 本機參考資料；目前依 `.gitignore` 不上傳。 |
@@ -132,11 +132,11 @@ python3 -m venv .venv
 
 1. 先確認 Servo 中心、限幅與兩軸方向都已完成。
 2. 放球後先以單軸、小動作測試；按 `r` 啟動後若球被推得更遠，立刻按 `r` 停止，將對應的 `SERVO_X_DIRECTION` 或 `SERVO_Y_DIRECTION` 改為 `-1`。
-3. 保持 `Ki = 0`，從小 `Kp` 開始，逐步提高到已有反應但未持續振盪。
-4. 加少量 `Kd` 抑制振盪與過衝。
-5. 只有在穩定後仍有固定偏差時，才少量加入 `Ki`。
+3. Nano 韌體是唯一 PID 參數來源；Camera Vision 只送 `POS`、`LOST`、`READY`、`RUN` 與必要 `TARGET`。
+4. 本 P-only 測試值在 `Arduino_Nano_Ball_Balance.ino`：X/Y `Kp=0.10`、`Ki=0.00`、`Kd=0.00`。
+5. 若要調整 `Kp`、`Ki` 或 `Kd`，修改並重新燒錄 Nano `.ino`；重啟 Camera Vision 或改 `camera_config.json` 不會改 Nano PID。
 
-預設 PID 參數只是保守起點，不保證適用於不同連桿、球體、平台剛性或攝影機延遲。
+預設 P-only 參數只是保守起點，不保證適用於不同連桿、球體、平台剛性或攝影機延遲。
 
 ## 常用 Serial 指令（搖桿校正版）
 

@@ -5,7 +5,10 @@
  *   POS,<x_mm>,<y_mm>,<camera_timestamp_ms>
  *   LOST
  *   RUN | READY | TARGET,<x_mm>,<y_mm>
- *   PIDX,<kp>,<ki>,<kd> | PIDY,<kp>,<ki>,<kd> | PING
+ *   PING | HELP
+ *
+ * Nano firmware is the only PID parameter source/control authority.
+ * PIDX/PIDY commands are rejected with ERROR,PID_MANAGED_BY_NANO.
  *
  * POS replies with POS,OK after the Nano accepts a fresh in-range sample.
  * RUN must be immediately preceded by a fresh accepted POS; READY stops PID and returns servos to neutral.
@@ -52,9 +55,8 @@ constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
 constexpr uint32_t SATURATION_WARNING_MS = 2000UL;
 
-// Safe fallback used only before the PC runtime PID profile is delivered.
-// Camera_Vision/camera_config.json sends PIDX/PIDY on startup, config apply,
-// and RUN preflight; those runtime values are the active RUN profile.
+// Nano firmware is the single source of truth for PID constants. Camera Vision
+// sends only vision/control-state commands and must not override these values.
 constexpr float DEFAULT_KP_X = 0.10f;
 constexpr float DEFAULT_KI_X = 0.00f;
 constexpr float DEFAULT_KD_X = 0.00f;
@@ -296,7 +298,8 @@ void updateStatusLed() {
 
 void printHelp() {
   Serial.println(F("PC protocol: POS,x,y,timestamp -> POS,OK | final POS immediately before RUN | LOST | READY"));
-  Serial.println(F("TARGET,x,y | PIDX,kp,ki,kd | PIDY,kp,ki,kd | PING"));
+  Serial.println(F("TARGET,x,y | PING | HELP"));
+  Serial.println(F("PID source: Nano firmware only; PIDX/PIDY return ERROR,PID_MANAGED_BY_NANO"));
 }
 
 void processCommand(char *line) {
@@ -339,18 +342,7 @@ void processCommand(char *line) {
       Serial.println(F("ERROR,BAD_TARGET"));
     }
   } else if (strcmp(command, "PIDX") == 0 || strcmp(command, "PIDY") == 0) {
-    float kp, ki, kd;
-    if (parseFloat(strtok(NULL, ","), kp) && parseFloat(strtok(NULL, ","), ki) &&
-        parseFloat(strtok(NULL, ","), kd) && strtok(NULL, ",") == NULL) {
-      PIDController &pid = strcmp(command, "PIDX") == 0 ? pidX : pidY;
-      pid.kp = kp;
-      pid.ki = ki;
-      pid.kd = kd;
-      pid.reset();
-      Serial.println(F("PID,OK"));
-    } else {
-      Serial.println(F("ERROR,BAD_PID"));
-    }
+    Serial.println(F("ERROR,PID_MANAGED_BY_NANO"));
   } else if (strcmp(command, "PING") == 0 && strtok(NULL, ",") == NULL) {
     Serial.println(F("PONG"));
   } else if (strcmp(command, "HELP") == 0 && strtok(NULL, ",") == NULL) {

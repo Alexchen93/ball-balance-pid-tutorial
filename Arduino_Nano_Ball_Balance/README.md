@@ -31,14 +31,11 @@ LOST
 RUN
 READY
 TARGET,0.0,0.0
-PIDX,0.10,0.00,0.00
-PIDY,0.10,0.00,0.00
 ```
 
 Nano 每秒回傳 10 筆 `TEL,...` 資料，包含目前座標、誤差、PID 輸出、Servo 角度與連線／球遺失狀態。
 
-Nano 內建預設 PID 是連線失敗、reset/reconnect 後尚未收到 Desktop 設定時的安全
-fallback。實際 RUN profile 由 `Camera_Vision/camera_config.json` 的 `pid` 設定下發：
-Camera Vision 會在啟動、套用設定與 `R` preflight 送出 `PIDX`/`PIDY`，用來覆寫 Nano
-內建值。先固定單一軸並以 `Ki=0` 測試小 `Kp`，確認方向正確後再提高 `Kp`、加入少量
-`Kd`；若有固定偏差才少量加入 `Ki`。
+Nano 韌體是唯一 PID 參數來源與控制權威；Camera Vision 不會保存、下發或覆寫 PID。
+本 P-only 測試值寫在 `Arduino_Nano_Ball_Balance.ino`：X/Y `Kp=0.10`、`Ki=0.00`、
+`Kd=0.00`。若要讓任何 PID 變更生效，必須修改並重新燒錄 `.ino`。舊 `PIDX`/`PIDY`
+命令會被明確拒絕並回 `ERROR,PID_MANAGED_BY_NANO`。
