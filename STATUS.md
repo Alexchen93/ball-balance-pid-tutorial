@@ -11,9 +11,16 @@ Updated: 2026-09-13 Asia/Taipei
 - The tracked camera config currently records the latest HSV and zero-reference calibration values.
 - The launcher now ignores USB serial devices that exist but are not readable/writable by the current user, and reports blocked devices separately.
 
+## Current diagnostic focus
+
+- P-only diagnostic is staged for the next Camera Vision restart: `PID TEST: P-only (I=0,D=0)`.
+- The runtime PID source is now `Camera_Vision/camera_config.json` `pid`; startup, config apply, and every `R` preflight send `PIDX/PIDY` before RUN.
+- Keep the existing per-axis P values: X `Kp=0.10`, Y `Kp=0.10`; both axes use `Ki=0.00`, `Kd=0.00`.
+- Hardware question to verify: when the ball is held at a fixed edge error, does P-only control create a stable one-direction tilt instead of oscillating or reversing?
+
 ## Not yet proven on hardware
 
-- The current source/config state is ready to commit, but real PID behavior still needs to be retested after restarting the system.
+- The P-only diagnostic still needs to be retested after restarting Camera Vision; do not claim the PID issue is fixed yet.
 - Before claiming closed-loop stability, rerun C/D calibration after restart and do single-axis direction tests.
 - Do not treat this repo state as completed stable closed-loop control yet.
 
