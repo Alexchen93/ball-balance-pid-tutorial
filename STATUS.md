@@ -15,6 +15,7 @@ Updated: 2026-09-13 Asia/Taipei
 
 - P-only diagnostic is staged for the next Camera Vision restart: `PID TEST: P-only (I=0,D=0)`.
 - The runtime PID source is now `Camera_Vision/camera_config.json` `pid`; startup, config apply, and every `R` preflight send `PIDX/PIDY` before RUN.
+- Nano defaults are only the safe fallback for connection failure or the short window before settings are delivered; the actual RUN profile is sent by Camera Vision from `camera_config.json`.
 - Keep the existing per-axis P values: X `Kp=0.10`, Y `Kp=0.10`; both axes use `Ki=0.00`, `Kd=0.00`.
 - Hardware question to verify: when the ball is held at a fixed edge error, does P-only control create a stable one-direction tilt instead of oscillating or reversing?
 

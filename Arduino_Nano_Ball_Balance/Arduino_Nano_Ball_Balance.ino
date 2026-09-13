@@ -52,13 +52,15 @@ constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
 constexpr uint32_t SATURATION_WARNING_MS = 2000UL;
 
-// Conservative first-power-on values. Tune X and Y independently on hardware.
+// Safe fallback used only before the PC runtime PID profile is delivered.
+// Camera_Vision/camera_config.json sends PIDX/PIDY on startup, config apply,
+// and RUN preflight; those runtime values are the active RUN profile.
 constexpr float DEFAULT_KP_X = 0.10f;
 constexpr float DEFAULT_KI_X = 0.00f;
-constexpr float DEFAULT_KD_X = 0.25f;
+constexpr float DEFAULT_KD_X = 0.00f;
 constexpr float DEFAULT_KP_Y = 0.10f;
 constexpr float DEFAULT_KI_Y = 0.00f;
-constexpr float DEFAULT_KD_Y = 0.25f;
+constexpr float DEFAULT_KD_Y = 0.00f;
 
 enum ControllerState : uint8_t { WAIT_LINK, READY, RUN };
 enum LinkState : uint8_t { LINK_WAIT, LINK_OK, BALL_LOST, LINK_LOST, POSITION_RANGE_ERROR };
