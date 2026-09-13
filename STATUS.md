@@ -13,16 +13,16 @@ Updated: 2026-09-13 Asia/Taipei
 
 ## Current diagnostic focus
 
-- P-only diagnostic is staged in Nano firmware and requires reflashing `Arduino_Nano_Ball_Balance.ino`: X `Kp=0.10`, Y `Kp=0.10`; both axes use `Ki=0.00`, `Kd=0.00`.
+- P-only（Kp=.10, Ki=Kd=0）實機方向響應成功；初步支持先前震盪與 D/參數或映射相關，但尚未宣稱閉迴路穩定完成。
 - Nano firmware is the single PID parameter source/control authority. Camera Vision does not save, send, or override PID settings.
 - Camera Vision restart or `camera_config.json` changes do not change Nano PID. Any PID change requires editing and reflashing the `.ino`.
-- Hardware question to verify: when the ball is held at a fixed edge error, does P-only control create a stable one-direction tilt instead of oscillating or reversing?
+- Continue with the Nano single-authority target: firmware remains the only PID parameter/control source; Camera Vision remains vision/serial state only.
 
 ## Not yet proven on hardware
 
-- The P-only diagnostic still needs to be retested after restarting Camera Vision; do not claim the PID issue is fixed yet.
-- Before claiming closed-loop stability, rerun C/D calibration after restart and do single-axis direction tests.
-- Do not treat this repo state as completed stable closed-loop control yet.
+- Do not claim closed-loop stability yet; the current result only confirms P-only direction response.
+- Before claiming completed stable control, rerun C/D calibration after restart and do single-axis tests under the Nano-owned PID constants.
+- Keep D/parameter tuning and mapping checks as follow-up candidates if oscillation returns.
 
 ## Observed issue
 
