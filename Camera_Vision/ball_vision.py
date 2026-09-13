@@ -160,9 +160,10 @@ class NanoTransport:
                 line = self.connection.readline().decode("ascii", errors="replace").strip()
                 if not line:
                     continue
-                # TEL,state,link,ballX,ballY,errorX,errorY,outputX,outputY,servoX,servoY,ageMs
+                # New: TEL,state,link,ballX,ballY,eXPct,eYPct,uXPct,uYPct,tiltXDeg,tiltYDeg,servoX,servoY,ageMs
+                # Legacy 12-field TEL is accepted only for RUN startup compatibility before reflashing.
                 parts = line.split(",")
-                if len(parts) == 12 and parts[0] == "TEL":
+                if parts[0] == "TEL" and len(parts) in (12, 14):
                     self.last_telemetry = line
                     events.append(line)
                     # Keep setup quiet: print one status when READY changes, then
@@ -171,14 +172,26 @@ class NanoTransport:
                     if controller_state != "RUN":
                         events.append(f"STATE,{controller_state}")
                     if controller_state == "RUN" or controller_state != self.last_terminal_controller_state:
+                        if len(parts) == 14:
+                            detail = (
+                                f" error=({parts[5]},{parts[6]})%"
+                                f" output=({parts[7]},{parts[8]})%"
+                                f" tilt=({parts[9]},{parts[10]})deg"
+                                f" angle=X:{parts[11]}deg Y:{parts[12]}deg"
+                                f" position_age={parts[13]}ms"
+                            )
+                        else:
+                            detail = (
+                                f" legacy_error_mm=({parts[5]},{parts[6]})"
+                                f" legacy_tilt=({parts[7]},{parts[8]})deg"
+                                f" angle=X:{parts[9]}deg Y:{parts[10]}deg"
+                                f" position_age={parts[11]}ms"
+                            )
                         print(
                             "SERVO"
                             f" state={controller_state} link={parts[2]}"
                             f" ball=({parts[3]},{parts[4]})"
-                            f" error=({parts[5]},{parts[6]})"
-                            f" output=({parts[7]},{parts[8]})deg"
-                            f" angle=X:{parts[9]}deg Y:{parts[10]}deg"
-                            f" position_age={parts[11]}ms"
+                            f"{detail}"
                         )
                     self.last_terminal_controller_state = controller_state
                 else:
@@ -466,12 +479,12 @@ class BallVision:
         if self.run_start_ack_position is None:
             return False
         parts = nano_event.split(",")
-        if len(parts) != 12 or parts[:3] != ["TEL", "READY", "OK"]:
+        if len(parts) not in (12, 14) or parts[:3] != ["TEL", "READY", "OK"]:
             return False
         try:
             telemetry_x = float(parts[3])
             telemetry_y = float(parts[4])
-            age_ms = float(parts[11])
+            age_ms = float(parts[13] if len(parts) == 14 else parts[11])
         except ValueError:
             return False
         if not all(math.isfinite(value) for value in (telemetry_x, telemetry_y, age_ms)):

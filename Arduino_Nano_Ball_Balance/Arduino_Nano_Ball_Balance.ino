@@ -13,7 +13,7 @@
  * POS replies with POS,OK after the Nano accepts a fresh in-range sample.
  * RUN must be immediately preceded by a fresh accepted POS; READY stops PID and returns servos to neutral.
  * Nano telemetry (10 Hz):
- *   TEL,<state>,<link>,<x>,<y>,<error_x>,<error_y>,<u_x>,<u_y>,<servo_x>,<servo_y>,<age_ms>
+ *   TEL,<state>,<link>,<x>,<y>,<e_x_pct>,<e_y_pct>,<u_x_pct>,<u_y_pct>,<tilt_x_deg>,<tilt_y_deg>,<servo_x>,<servo_y>,<age_ms>
  *
  * Libraries to install from Arduino Library Manager:
  *   Servo
@@ -36,7 +36,7 @@ constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
 constexpr int SERVO_X_CENTER = 74;
 // Y 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填；本教案最終中心採 90 度。
 constexpr int SERVO_Y_CENTER = 76;
-// X 中心左右可移動的安全範圍。目前端點是 X中心90 ±20，推導為 70～110 度；
+// Servo 實體安全行程，只限制機構角度端點；不要拿來表示 PID 平台最大傾角。
 // 調整 OFFSET 即可改安全行程，不需要手算端點。
 // 若未來 X/Y 中心分開，須確認共用範圍仍適用，避免暗中改變 PID 行為。
 constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
@@ -47,20 +47,23 @@ constexpr int SERVO_MAX_ANGLE = SERVO_X_CENTER + SERVO_LIMIT_OFFSET_DEG;
 constexpr int SERVO_X_DIRECTION = -1; // 已依左右邊緣實測反轉；若球被推向同側，再改回 1。
 constexpr int SERVO_Y_DIRECTION = 1;  // Change to -1 if the Y correction is reversed.
 
-constexpr float POSITION_LIMIT_X_MM = 260.0f;  // 240 mm platform width + margin
-constexpr float POSITION_LIMIT_Y_MM = 200.0f;  // 180 mm platform height + margin
-constexpr float PID_OUTPUT_LIMIT_DEG = 8.0f;
-constexpr float PID_INTEGRAL_LIMIT = 60.0f;
+constexpr float POSITION_LIMIT_X_MM = 260.0f;  // POS range and X full-scale error
+constexpr float POSITION_LIMIT_Y_MM = 200.0f;  // POS range and Y full-scale error
+constexpr float MAX_PLATFORM_TILT_X_DEG = 8.0f;
+constexpr float MAX_PLATFORM_TILT_Y_DEG = 8.0f;
+constexpr float PID_INTEGRAL_LIMIT = 1.0f;
 constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
 constexpr uint32_t SATURATION_WARNING_MS = 2000UL;
 
 // Nano firmware is the single source of truth for PID constants. Camera Vision
 // sends only vision/control-state commands and must not override these values.
-constexpr float DEFAULT_KP_X = 0.10f;
+// PID runs in normalized space: Kp=1.0 means a full-scale position error
+// requests 100% of MAX_PLATFORM_TILT_*_DEG; Kp=0.5 would request 50%.
+constexpr float DEFAULT_KP_X = 1.00f;
 constexpr float DEFAULT_KI_X = 0.00f;
 constexpr float DEFAULT_KD_X = 0.00f;
-constexpr float DEFAULT_KP_Y = 0.10f;
+constexpr float DEFAULT_KP_Y = 1.00f;
 constexpr float DEFAULT_KI_Y = 0.00f;
 constexpr float DEFAULT_KD_Y = 0.00f;
 
@@ -72,35 +75,32 @@ struct PIDController {
   float ki;
   float kd;
   float integral;
-  float previousMeasurement;
-  bool hasPreviousMeasurement;
+  float previousError;
+  bool hasPreviousError;
 
   PIDController(float p, float i, float d)
-      : kp(p), ki(i), kd(d), integral(0.0f), previousMeasurement(0.0f),
-        hasPreviousMeasurement(false) {}
+      : kp(p), ki(i), kd(d), integral(0.0f), previousError(0.0f),
+        hasPreviousError(false) {}
 
   void reset() {
     integral = 0.0f;
-    hasPreviousMeasurement = false;
+    hasPreviousError = false;
   }
 
-  float update(float target, float measurement, float dtSeconds) {
-    const float error = target - measurement;
-    const float derivative = hasPreviousMeasurement
-                                 ? -(measurement - previousMeasurement) / dtSeconds
-                                 : 0.0f;
+  float update(float errorNorm, float dtSeconds) {
+    const float derivative = hasPreviousError ? (errorNorm - previousError) / dtSeconds : 0.0f;
     const float candidateIntegral = constrain(
-        integral + error * dtSeconds, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT);
-    const float unconstrained = kp * error + ki * candidateIntegral + kd * derivative;
-    const float output = constrain(unconstrained, -PID_OUTPUT_LIMIT_DEG, PID_OUTPUT_LIMIT_DEG);
+        integral + errorNorm * dtSeconds, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT);
+    const float unconstrained = kp * errorNorm + ki * candidateIntegral + kd * derivative;
+    const float outputNorm = constrain(unconstrained, -1.0f, 1.0f);
 
-    // Conditional integration prevents windup while an output is angle-limited.
-    if (output == unconstrained || error * output < 0.0f) {
+    // Conditional integration prevents windup while normalized output is saturated.
+    if (outputNorm == unconstrained || errorNorm * outputNorm < 0.0f) {
       integral = candidateIntegral;
     }
-    previousMeasurement = measurement;
-    hasPreviousMeasurement = true;
-    return output;
+    previousError = errorNorm;
+    hasPreviousError = true;
+    return outputNorm;
   }
 };
 
@@ -118,10 +118,12 @@ float ballX = 0.0f;
 float ballY = 0.0f;
 float targetX = 0.0f;
 float targetY = 0.0f;
-float errorX = 0.0f;
-float errorY = 0.0f;
-float outputX = 0.0f;
-float outputY = 0.0f;
+float errorNormX = 0.0f;
+float errorNormY = 0.0f;
+float outputNormX = 0.0f;
+float outputNormY = 0.0f;
+float requestedTiltX = 0.0f;
+float requestedTiltY = 0.0f;
 int servoAngleX = SERVO_X_CENTER;
 int servoAngleY = SERVO_Y_CENTER;
 
@@ -164,10 +166,12 @@ void writeNeutralServos() {
 void resetControllers() {
   pidX.reset();
   pidY.reset();
-  errorX = 0.0f;
-  errorY = 0.0f;
-  outputX = 0.0f;
-  outputY = 0.0f;
+  errorNormX = 0.0f;
+  errorNormY = 0.0f;
+  outputNormX = 0.0f;
+  outputNormY = 0.0f;
+  requestedTiltX = 0.0f;
+  requestedTiltY = 0.0f;
   lastPidUs = 0;
   servoSaturated = false;
   saturationStartedMs = 0;
@@ -227,10 +231,14 @@ void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
   Serial.println(F("POS,OK"));
 }
 
+float normalizedPositionError(float targetMm, float ballMm, float limitMm) {
+  return constrain((targetMm - ballMm) / limitMm, -1.0f, 1.0f);
+}
+
 void updateServos() {
-  // PID 輸出只疊加到集中校正區的中心角度，端點限制也只引用同一組常數。
-  const float requestedX = SERVO_X_CENTER + SERVO_X_DIRECTION * outputX;
-  const float requestedY = SERVO_Y_CENTER + SERVO_Y_DIRECTION * outputY;
+  // Platform tilt requests come from normalized PID output; servo endpoints are separate physical safety bounds.
+  const float requestedX = SERVO_X_CENTER + SERVO_X_DIRECTION * requestedTiltX;
+  const float requestedY = SERVO_Y_CENTER + SERVO_Y_DIRECTION * requestedTiltY;
   servoAngleX = constrain((int)round(requestedX), SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
   servoAngleY = constrain((int)round(requestedY), SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
   servoX.write(servoAngleX);
@@ -256,10 +264,12 @@ void updatePidForPosition() {
                               ? 0.033f
                               : constrain((nowUs - lastPidUs) / 1000000.0f, 0.010f, 0.150f);
   lastPidUs = nowUs;
-  errorX = targetX - ballX;
-  errorY = targetY - ballY;
-  outputX = pidX.update(targetX, ballX, dtSeconds);
-  outputY = pidY.update(targetY, ballY, dtSeconds);
+  errorNormX = normalizedPositionError(targetX, ballX, POSITION_LIMIT_X_MM);
+  errorNormY = normalizedPositionError(targetY, ballY, POSITION_LIMIT_Y_MM);
+  outputNormX = pidX.update(errorNormX, dtSeconds);
+  outputNormY = pidY.update(errorNormY, dtSeconds);
+  requestedTiltX = outputNormX * MAX_PLATFORM_TILT_X_DEG;
+  requestedTiltY = outputNormY * MAX_PLATFORM_TILT_Y_DEG;
   updateServos();
 }
 
@@ -276,10 +286,12 @@ void printTelemetry() {
   Serial.print(','); Serial.print(linkStateName(linkState));
   Serial.print(','); Serial.print(ballX, 1);
   Serial.print(','); Serial.print(ballY, 1);
-  Serial.print(','); Serial.print(errorX, 1);
-  Serial.print(','); Serial.print(errorY, 1);
-  Serial.print(','); Serial.print(outputX, 2);
-  Serial.print(','); Serial.print(outputY, 2);
+  Serial.print(','); Serial.print(errorNormX * 100.0f, 1);
+  Serial.print(','); Serial.print(errorNormY * 100.0f, 1);
+  Serial.print(','); Serial.print(outputNormX * 100.0f, 1);
+  Serial.print(','); Serial.print(outputNormY * 100.0f, 1);
+  Serial.print(','); Serial.print(requestedTiltX, 2);
+  Serial.print(','); Serial.print(requestedTiltY, 2);
   Serial.print(','); Serial.print(servoAngleX);
   Serial.print(','); Serial.print(servoAngleY);
   Serial.print(','); Serial.println(ageMs);

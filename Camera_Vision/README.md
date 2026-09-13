@@ -49,7 +49,7 @@ python3 -m serial.tools.list_ports -v
 2. 先以 `--no-serial` 完成或確認 READY checklist，再接 Nano。
 3. Servo 電源必須是獨立 5–6 V，並和 Nano 共地。空載時確認兩軸中心角、方向與安全限幅。
 4. 先按 `r` 只測一個短暫、小幅的中心修正；若方向相反，立即按 `r` 停止並調整 Nano 的 `SERVO_*_DIRECTION`。
-5. 以 Nano 韌體目前的 P-only 常數先做單軸、後雙軸測試。任何 PID 變更都必須修改並重新燒錄 `.ino`；重啟 Camera Vision 不會改變 Nano PID。
+5. 以 Nano 韌體目前的 normalized P-only 常數先做單軸、後雙軸測試。任何 PID 或 max tilt 變更都必須修改並重新燒錄 `.ino`；重啟 Camera Vision 不會改變 Nano PID。
 
 ## 通訊與限制
 
@@ -58,4 +58,4 @@ python3 -m serial.tools.list_ports -v
 - `PIDX`/`PIDY` 不再是控制協定；新版 Nano 收到後會回 `ERROR,PID_MANAGED_BY_NANO`。
 - 最新正式 Nano 韌體成功接受合法 `POS` 時會回單行 `POS,OK`。若已燒錄的舊版韌體沒有 `POS,OK`，Python 在啟動 RUN 的初始 ACK 階段會相容接受座標相符且新鮮的 `TEL,READY,OK`，再送最後一筆 fresh `POS` 緊接 `RUN`；正式使用仍建議重燒最新版 `.ino`，讓協議一致。
 - 正式 Nano 韌體接受 X ±260 mm、Y ±200 mm 內的位置；需要更大平台時，同步調整 `Arduino_Nano_Ball_Balance.ino` 的 `POSITION_LIMIT_X_MM` / `POSITION_LIMIT_Y_MM`。
-- 相機偵測、平台尺寸與 Servo 機構尚未實測，Nano 內建 P-only 起始值只作低風險驗證，不能保證已能平衡。
+- 正式 Nano 韌體目前是未實機驗證的 normalized P-only 控制模型；Nano 內建起始值只作低風險驗證，不能保證已能平衡。

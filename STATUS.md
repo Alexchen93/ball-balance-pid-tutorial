@@ -13,15 +13,16 @@ Updated: 2026-09-13 Asia/Taipei
 
 ## Current diagnostic focus
 
-- P-only（Kp=.10, Ki=Kd=0）實機方向響應成功；初步支持先前震盪與 D/參數或映射相關，但尚未宣稱閉迴路穩定完成。
+- New Nano normalized P-only mapping is implemented but not hardware-verified: `e_norm = clamp((target_mm - ball_mm) / POSITION_LIMIT_AXIS_MM, -1, +1)`, `u_norm = clamp(Kp*e_norm, -1, +1)`, `tilt_deg = u_norm * MAX_PLATFORM_TILT_AXIS_DEG`.
+- Previous P-only（Kp=.10, Ki=Kd=0）實機方向響應成功；that result does not validate the new Kp=1/max-tilt mapping.
 - Nano firmware is the single PID parameter source/control authority. Camera Vision does not save, send, or override PID settings.
-- Camera Vision restart or `camera_config.json` changes do not change Nano PID. Any PID change requires editing and reflashing the `.ino`.
+- Camera Vision restart or `camera_config.json` changes do not change Nano PID or max tilt. Any PID/max-tilt change requires editing and reflashing the `.ino`.
 - Continue with the Nano single-authority target: firmware remains the only PID parameter/control source; Camera Vision remains vision/serial state only.
 
 ## Not yet proven on hardware
 
 - Do not claim closed-loop stability yet; the current result only confirms P-only direction response.
-- Before claiming completed stable control, rerun C/D calibration after restart and do single-axis tests under the Nano-owned PID constants.
+- Before claiming completed stable control, reflash the updated `.ino`, rerun C/D calibration after restart, and do single-axis tests under the Nano-owned normalized PID constants.
 - Keep D/parameter tuning and mapping checks as follow-up candidates if oscillation returns.
 
 ## Observed issue
