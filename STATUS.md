@@ -7,8 +7,9 @@ Updated: 2026-09-13 Asia/Taipei
 - Camera READY calibration now has the three required phases completed: B, C, and D.
 - P remains a pause/hold state and is not treated as a completed calibration phase.
 - RUN startup keeps compatibility with the Nano `POS` handshake: current firmware should answer valid `POS` with `POS,OK`; the Python side can still tolerate the existing READY telemetry compatibility path when matching fresh coordinates are observed.
-- Platform corner order was corrected from the previous TL-BL-BR-TR order to TL-TR-BR-BL.
-- The tracked camera config currently records the latest HSV and zero-reference calibration values.
+- Camera Vision C calibration requires TL-TR-BR-BL click order, validates the four-point geometry, and rejects invalid or misordered geometry without overwriting the previous valid config.
+- Stored platform corner configs are checked on load/apply: invalid or misordered geometry blocks homography and requires C recalibration.
+- `camera_config.json` is a tracked editable default; live calibration changes should be reviewed before committing.
 - The launcher now ignores USB serial devices that exist but are not readable/writable by the current user, and reports blocked devices separately.
 
 ## Current diagnostic focus

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import glob
 import json
 import math
@@ -20,7 +21,7 @@ from serial.tools import list_ports
 
 
 CONTROL_AUTHORITY_LABEL = "PID SOURCE: Nano firmware only"
-WINDOW_NAME = f"Ball vision: {CONTROL_AUTHORITY_LABEL} | b=HSV c=platform d=zero r=RUN p=READY q=quit"
+WINDOW_NAME = f"Ball vision: {CONTROL_AUTHORITY_LABEL} | b=HSV c=TL-TR-BR-BL d=zero r=RUN p=READY q=quit"
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -34,6 +35,183 @@ def load_config(path: Path) -> dict[str, Any]:
 
 def save_config(path: Path, config: dict[str, Any]) -> None:
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+CORNER_LABELS_TLTRBRBL = ("TL", "TR", "BR", "BL")
+
+
+def _polygon_area(points: list[tuple[float, float]]) -> float:
+    return 0.5 * sum(
+        x1 * y2 - x2 * y1
+        for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1])
+    )
+
+
+def _corner_cross(
+    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]
+) -> float:
+    return (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+
+
+def normalize_platform_corners(
+    corners: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+) -> tuple[list[tuple[float, float]] | None, str | None]:
+    """Validate and return platform corners only in TL, TR, BR, BL order."""
+    if len(corners) != 4:
+        return None, "Platform calibration needs exactly four corner points. Press C to recalibrate."
+    try:
+        points = [(float(x), float(y)) for x, y in corners]
+    except (TypeError, ValueError):
+        return None, "Platform corner points are not numeric. Press C to recalibrate."
+    if not all(math.isfinite(value) for point in points for value in point):
+        return None, "Platform corner points contain non-finite values. Press C to recalibrate."
+    for index, point in enumerate(points):
+        for other in points[index + 1:]:
+            distance_sq = (point[0] - other[0]) ** 2 + (point[1] - other[1]) ** 2
+            if distance_sq <= 1.0:
+                return None, "Platform corner points contain duplicate or overlapping clicks. Press C to retry."
+
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    span_x = max(xs) - min(xs)
+    span_y = max(ys) - min(ys)
+    if span_x <= 5.0 or span_y <= 5.0:
+        return None, "Platform corner geometry is degenerate or too small. Press C to retry."
+
+    center_x = sum(xs) / 4.0
+    center_y = sum(ys) / 4.0
+    ordered = sorted(points, key=lambda point: math.atan2(point[1] - center_y, point[0] - center_x))
+    area = _polygon_area(ordered)
+    min_area = max(25.0, span_x * span_y * 0.05)
+    if abs(area) < min_area:
+        return None, "Platform corner geometry is degenerate; area is too small. Press C to retry."
+    if area < 0:
+        ordered.reverse()
+
+    crosses = [
+        _corner_cross(ordered[index - 1], ordered[index], ordered[(index + 1) % 4])
+        for index in range(4)
+    ]
+    min_cross = max(10.0, span_x * span_y * 0.01)
+    if any(abs(cross) < min_cross for cross in crosses) or not all(cross > 0 for cross in crosses):
+        return None, "Platform corners are concave, crossed, or nearly collinear. Press C to retry."
+
+    tolerance_x = max(3.0, span_x * 0.02)
+    tolerance_y = max(3.0, span_y * 0.02)
+    labels_by_point: dict[tuple[float, float], str] = {}
+    for point in ordered:
+        x, y = point
+        if x < center_x - tolerance_x and y < center_y - tolerance_y:
+            label = "TL"
+        elif x > center_x + tolerance_x and y < center_y - tolerance_y:
+            label = "TR"
+        elif x > center_x + tolerance_x and y > center_y + tolerance_y:
+            label = "BR"
+        elif x < center_x - tolerance_x and y > center_y + tolerance_y:
+            label = "BL"
+        else:
+            return None, "Platform corner order is not geometrically clear enough. Press C to retry."
+        if label in labels_by_point.values():
+            return None, "Platform corners do not identify one clear TL/TR/BR/BL each. Press C to retry."
+        labels_by_point[point] = label
+    if set(labels_by_point.values()) != set(CORNER_LABELS_TLTRBRBL):
+        return None, "Platform corners do not identify one clear TL/TR/BR/BL each. Press C to retry."
+
+    clicked_labels = [labels_by_point[point] for point in points]
+    if tuple(clicked_labels) != CORNER_LABELS_TLTRBRBL:
+        mismatches = [
+            f"point {index + 1} is {actual} but should be {expected}"
+            for index, (actual, expected) in enumerate(zip(clicked_labels, CORNER_LABELS_TLTRBRBL))
+            if actual != expected
+        ]
+        return (
+            None,
+            "Platform corners must be clicked/stored TL -> TR -> BR -> BL. "
+            + "; ".join(mismatches)
+            + ". Press C to retry.",
+        )
+    return points, None
+
+
+def _read_proc_text(path: Path) -> str:
+    try:
+        return path.read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _proc_command(pid: str) -> str:
+    cmdline_path = Path("/proc") / pid / "cmdline"
+    try:
+        raw = cmdline_path.read_bytes().replace(b"\0", b" ").strip()
+    except OSError:
+        raw = b""
+    if raw:
+        return raw.decode(errors="replace")
+    return _read_proc_text(Path("/proc") / pid / "comm") or "?"
+
+
+def _proc_parent_pid(pid: str) -> str:
+    for line in _read_proc_text(Path("/proc") / pid / "status").splitlines():
+        if line.startswith("PPid:"):
+            fields = line.split(None, 1)
+            return fields[1] if len(fields) == 2 else "?"
+    return "?"
+
+
+def serial_port_holder_details(port: str) -> list[str]:
+    try:
+        target = os.path.realpath(port)
+    except OSError:
+        target = port
+    holders: list[tuple[int, str]] = []
+    for proc_entry in Path("/proc").iterdir():
+        if not proc_entry.name.isdigit():
+            continue
+        fd_dir = proc_entry / "fd"
+        try:
+            fd_entries = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for fd_entry in fd_entries:
+            try:
+                linked = os.path.realpath(fd_entry)
+            except OSError:
+                continue
+            if linked == target:
+                holders.append((int(proc_entry.name), fd_entry.name))
+                break
+
+    details: list[str] = []
+    for pid, fd in sorted(holders):
+        pid_text = str(pid)
+        parent_pid = _proc_parent_pid(pid_text)
+        parent_command = _proc_command(parent_pid) if parent_pid.isdigit() else "?"
+        details.append(
+            f"PID {pid_text} fd {fd}: {_proc_command(pid_text)} | parent {parent_pid}: {parent_command}"
+        )
+    return details
+
+
+def is_serial_busy_error(error: BaseException) -> bool:
+    err_no = getattr(error, "errno", None)
+    if err_no == errno.EBUSY:
+        return True
+    message = str(error)
+    return "Errno 16" in message or "EBUSY" in message or "Device or resource busy" in message
+
+
+def print_serial_busy_diagnostics(port: str) -> None:
+    print(f"NANO BUSY DIAGNOSTIC: {port} is already open by another process.")
+    holders = serial_port_holder_details(port)
+    if holders:
+        for holder in holders:
+            print(f"NANO BUSY HOLDER: {holder}")
+    else:
+        print(
+            "NANO BUSY HOLDER: no /proc fd owner was visible to this user; "
+            "it may be owned by another user/session or released already."
+        )
 
 
 class NanoTransport:
@@ -74,6 +252,8 @@ class NanoTransport:
         return visible_ports, likely_ports, blocked_ports
 
     def _connect(self, port: str) -> bool:
+        if self.connection is not None:
+            self.close(send_ready=False)
         if not os.access(port, os.R_OK | os.W_OK):
             self.connection = None
             self.last_telemetry = f"Nano port permission blocked: {port}"
@@ -97,6 +277,8 @@ class NanoTransport:
             self.connection = None
             self.last_telemetry = f"Nano connect failed: {error}"
             print(f"NANO CONNECT ERROR ({port}): {error}")
+            if is_serial_busy_error(error):
+                print_serial_busy_diagnostics(port)
             return False
 
     def search_and_connect(self) -> bool:
@@ -170,7 +352,7 @@ class NanoTransport:
                     # stream live servo feedback only after the user presses r.
                     controller_state = parts[1]
                     if controller_state != "RUN":
-                        events.append(f"STATE,{controller_state}")
+                        events.append(f"TEL_STATE,{controller_state}")
                     if controller_state == "RUN" or controller_state != self.last_terminal_controller_state:
                         if len(parts) == 14:
                             detail = (
@@ -227,8 +409,10 @@ class BallVision:
         self.headless = headless
         self.mode = "normal"
         self.corners: list[tuple[float, float]] = [tuple(point) for point in config["platform"]["corners_px"]]
+        self.pending_corners: list[tuple[float, float]] = []
         self.homography: np.ndarray | None = None
         self.corner_order_message: str | None = None
+        self.corner_success_message: str | None = None
         self.filtered_position: np.ndarray | None = None
         stored_reference = config.get("control", {}).get("zero_reference_mm")
         self.zero_reference: np.ndarray | None = (
@@ -238,76 +422,47 @@ class BallVision:
         )
         self.latest_frame: np.ndarray | None = None
         self.latest_hsv: np.ndarray | None = None
-        self.corner_labels = ("top-left", "top-right", "bottom-right", "bottom-left")
+        self.corner_labels = CORNER_LABELS_TLTRBRBL
         self.pid_running = False
         self.run_start_phase: str | None = None
         self.run_start_deadline = 0.0
         self.run_start_ack_position: tuple[float, float] | None = None
+        self.run_start_pos_sent_at = 0.0
+        self.run_start_events_seen = 0
+        self.run_start_last_event: str | None = None
         self.last_sent_at = 0.0
         self.last_lost_at = 0.0
         self.latest_position: tuple[float, float] | None = None
         self.last_frame_at = time.monotonic()
         self.fps = 0.0
-        self._rebuild_homography()
+        self._rebuild_homography(persist_normalized=True)
 
-    def _corner_order_problem(self) -> str | None:
-        if len(self.corners) != 4:
-            return None
-        points = [(float(x), float(y)) for x, y in self.corners]
-        if not all(math.isfinite(value) for point in points for value in point):
-            return "Platform corner config has non-finite values. Press C to recalibrate TL, TR, BR, BL."
-        xs = [point[0] for point in points]
-        ys = [point[1] for point in points]
-        span_x = max(xs) - min(xs)
-        span_y = max(ys) - min(ys)
-        if span_x <= 1.0 or span_y <= 1.0:
-            return "Platform corner config is degenerate. Press C to recalibrate TL, TR, BR, BL."
-        center_x = (min(xs) + max(xs)) / 2.0
-        center_y = (min(ys) + max(ys)) / 2.0
-        tolerance_x = max(5.0, span_x * 0.08)
-        tolerance_y = max(5.0, span_y * 0.08)
-
-        top_left, top_right, bottom_right, bottom_left = points
-        expected_order = (
-            top_left[0] < center_x - tolerance_x
-            and top_left[1] < center_y - tolerance_y
-            and top_right[0] > center_x + tolerance_x
-            and top_right[1] < center_y - tolerance_y
-            and bottom_right[0] > center_x + tolerance_x
-            and bottom_right[1] > center_y + tolerance_y
-            and bottom_left[0] < center_x - tolerance_x
-            and bottom_left[1] > center_y + tolerance_y
-        )
-        if expected_order:
-            return None
-
-        looks_tl_bl_br_tr = (
-            top_left[0] < center_x - tolerance_x
-            and top_left[1] < center_y - tolerance_y
-            and top_right[0] < center_x - tolerance_x
-            and top_right[1] > center_y + tolerance_y
-            and bottom_right[0] > center_x + tolerance_x
-            and bottom_right[1] > center_y + tolerance_y
-            and bottom_left[0] > center_x + tolerance_x
-            and bottom_left[1] < center_y - tolerance_y
-        )
-        if looks_tl_bl_br_tr:
-            return (
-                "Stored platform corners look like TL, BL, BR, TR; RUN is blocked. "
-                "Press C to recalibrate TL, TR, BR, BL, or fix config with old indices [0,3,2,1]."
-            )
-        return "Stored platform corner order is ambiguous; RUN is blocked. Press C to recalibrate TL, TR, BR, BL."
-
-    def _rebuild_homography(self) -> None:
+    def _rebuild_homography(self, persist_normalized: bool = False) -> None:
         self.corner_order_message = None
         if len(self.corners) != 4:
             self.homography = None
             return
-        self.corner_order_message = self._corner_order_problem()
-        if self.corner_order_message is not None:
+        normalized, problem = normalize_platform_corners(self.corners)
+        if problem is not None or normalized is None:
             self.homography = None
+            self.corner_order_message = f"Stored platform corner config rejected: {problem}"
             print(self.corner_order_message)
             return
+        if normalized != self.corners:
+            old_corners = self.corners
+            self.corners = normalized
+            self.config["platform"]["corners_px"] = [list(point) for point in normalized]
+            self.zero_reference = None
+            self.config.setdefault("control", {}).pop("zero_reference_mm", None)
+            self.corner_success_message = "Platform corners saved as TL/TR/BR/BL; zero reference cleared."
+            print(
+                "Stored platform corners saved as TL/TR/BR/BL; "
+                "zero reference was cleared. 請把球放中心後按 D."
+            )
+            print(f"Old order: {old_corners}")
+            print(f"New order: {self.corners}")
+            if persist_normalized:
+                save_config(self.config_path, self.config)
         width = float(self.config["platform"]["width_mm"])
         height = float(self.config["platform"]["height_mm"])
         source = np.float32(self.corners)
@@ -338,8 +493,8 @@ class BallVision:
         if self.mode == "ball_colour":
             return "B: click the ball centre to sample HSV only."
         if self.mode == "corners":
-            next_index = min(len(self.corners), 3)
-            return f"C: click platform {self.corner_labels[next_index]} corner."
+            next_index = min(len(self.pending_corners) + 1, 4)
+            return f"C: click platform corner {next_index}/4 in order TL -> TR -> BR -> BL."
         if self.mode == "zero":
             return "D: click the place where the ball should rest at X=0 Y=0."
         if self.corner_order_message is not None:
@@ -349,7 +504,7 @@ class BallVision:
         if not self._has_ball_hsv():
             return "Next: press B, then click the ball centre for HSV."
         if not self._has_platform():
-            return "Next: press C, then click TL, TR, BR, BL platform corners."
+            return "Next: press C, then click four platform corners in order TL -> TR -> BR -> BL."
         return "Next: press D, then click the desired balance zero point."
 
     def _print_ready_checklist(self) -> None:
@@ -363,12 +518,28 @@ class BallVision:
         save_config(self.config_path, self.config)
         self._print_ready_checklist()
 
+    def _calibration_click_point(self, x: int, y: int) -> tuple[float, float] | None:
+        if self.latest_frame is None:
+            return None
+        frame_height, frame_width = self.latest_frame.shape[:2]
+        if 0 <= x < frame_width and 0 <= y < frame_height:
+            return float(x), float(y)
+        print(
+            f"Ignored calibration click ({x}, {y}): outside camera frame "
+            f"{frame_width}x{frame_height}. Keep the preview at its image size "
+            "and click inside the visible camera frame."
+        )
+        return None
+
     def _apply_saved_config(self) -> None:
         self.pid_running = False
         self.run_start_phase = None
+        self.run_start_ack_position = None
+        self.run_start_pos_sent_at = 0.0
         self.transport.send("READY")
         self.config = load_config(self.config_path)
         self.corners = [tuple(point) for point in self.config["platform"].get("corners_px", [])]
+        self.pending_corners = []
         stored_reference = self.config.get("control", {}).get("zero_reference_mm")
         self.zero_reference = (
             np.array(stored_reference, dtype=np.float32)
@@ -377,7 +548,7 @@ class BallVision:
         )
         self.filtered_position = None
         self.mode = "normal"
-        self._rebuild_homography()
+        self._rebuild_homography(persist_normalized=True)
         print("Saved camera_config.json applied.")
         self._print_ready_checklist()
 
@@ -456,6 +627,9 @@ class BallVision:
         self.pid_running = False
         self.run_start_phase = None
         self.run_start_ack_position = None
+        self.run_start_pos_sent_at = 0.0
+        self.run_start_events_seen = 0
+        self.run_start_last_event = None
         self.filtered_position = None
         self.last_sent_at = 0.0
         self.last_lost_at = 0.0
@@ -472,8 +646,11 @@ class BallVision:
             return
         self.run_start_phase = "wait_pos_ack"
         self.run_start_ack_position = position
-        self.run_start_deadline = time.monotonic() + 0.6
-        print("RUN requested: sent fresh POS for this frame; POS,OK or matching TEL,READY,OK will trigger a final POS immediately followed by RUN.")
+        self.run_start_pos_sent_at = time.monotonic()
+        self.run_start_events_seen = 0
+        self.run_start_last_event = None
+        self.run_start_deadline = self.run_start_pos_sent_at + 0.6
+        print("RUN requested: sent fresh POS for this frame; POS,OK, matching TEL,READY,OK, or immediate STATE,READY will trigger a final POS immediately followed by RUN.")
 
     def _is_implicit_pos_ack(self, nano_event: str) -> bool:
         if self.run_start_ack_position is None:
@@ -492,6 +669,16 @@ class BallVision:
         sent_x, sent_y = self.run_start_ack_position
         return age_ms <= 500.0 and abs(telemetry_x - sent_x) <= 2.0 and abs(telemetry_y - sent_y) <= 2.0
 
+    def _is_ready_state_pos_ack(self, nano_event: str) -> bool:
+        # Older already-flashed firmware may answer the first accepted POS from WAIT_LINK
+        # with only STATE,READY. The final POS sent below is still the freshness gate.
+        return (
+            nano_event == "STATE,READY"
+            and self.run_start_ack_position is not None
+            and self.run_start_pos_sent_at > 0.0
+            and time.monotonic() - self.run_start_pos_sent_at <= 0.6
+        )
+
     def _send_final_pos_and_run(self, ack_label: str) -> None:
         position = self.latest_position
         if position is None:
@@ -503,17 +690,35 @@ class BallVision:
         self.transport.send("RUN")
         self.run_start_phase = "wait_run_ack"
         self.run_start_ack_position = None
+        self.run_start_pos_sent_at = 0.0
+        self.run_start_events_seen = 0
+        self.run_start_last_event = None
         self.run_start_deadline = time.monotonic() + 0.6
         print(f"Nano accepted initial POS via {ack_label}; resent latest fresh POS immediately followed by RUN. Waiting for STATE,RUN.")
 
+    def _run_handshake_timeout_detail(self) -> str:
+        if self.run_start_events_seen == 0:
+            return (
+                "No Nano response was parsed after Python sent POS. This usually means the flashed "
+                "firmware does not acknowledge POS, the Nano reset during USB open, or serial RX is not "
+                "reaching the sketch."
+            )
+        return f"Python parsed {self.run_start_events_seen} Nano event(s); last event was {self.run_start_last_event!r}."
+
     def _handle_nano_events(self) -> None:
         for nano_event in self.transport.poll():
+            if self.run_start_phase is not None:
+                self.run_start_events_seen += 1
+                self.run_start_last_event = nano_event
             if self.run_start_phase == "wait_pos_ack":
                 if nano_event.startswith("POS,OK"):
                     self._send_final_pos_and_run("POS,OK")
                     continue
                 if self._is_implicit_pos_ack(nano_event):
                     self._send_final_pos_and_run("TEL,READY,OK compatibility fallback")
+                    continue
+                if self._is_ready_state_pos_ack(nano_event):
+                    self._send_final_pos_and_run("STATE,READY compatibility fallback")
                     continue
                 if nano_event.startswith("ERROR,"):
                     self._safe_ready(f"RUN cancelled by Nano ({nano_event}). Back to READY.")
@@ -529,23 +734,31 @@ class BallVision:
                 if nano_event.startswith("ERROR,"):
                     self._safe_ready(f"RUN rejected by Nano ({nano_event}). Back to READY.")
                     continue
-            if self.pid_running and (nano_event.startswith("ERROR,") or nano_event == "STATE,READY"):
+            if self.pid_running and (nano_event.startswith("ERROR,") or nano_event in ("STATE,READY", "TEL_STATE,READY")):
                 self._safe_ready(f"RUN stopped by Nano ({nano_event}). Back to READY; fix the reported condition before pressing R again.")
                 break
         if self.run_start_phase is not None and time.monotonic() > self.run_start_deadline:
             phase = self.run_start_phase
+            detail = self._run_handshake_timeout_detail()
             self.run_start_ack_position = None
-            self._safe_ready(f"RUN handshake timed out while waiting for Nano {phase}; Back to READY. Check serial RX/TX and Nano firmware protocol before pressing R again.")
+            self.run_start_pos_sent_at = 0.0
+            self._safe_ready(f"RUN handshake timed out while waiting for Nano {phase}. {detail} Back to READY; check serial RX/TX and Nano firmware protocol before pressing R again.")
 
     def _draw_overlay(self, frame: np.ndarray, ball: tuple[tuple[float, float], float] | None,
                       position: tuple[float, float] | None) -> np.ndarray:
         overlay = frame.copy()
-        if self.corners:
-            points = np.int32(self.corners)
-            cv2.polylines(overlay, [points], len(self.corners) == 4, (255, 255, 0), 2)
+        display_corners = self.pending_corners if self.mode == "corners" and self.pending_corners else self.corners
+        if display_corners:
+            points = np.int32(display_corners)
+            cv2.polylines(overlay, [points], len(display_corners) == 4, (255, 255, 0), 2)
             for index, point in enumerate(points):
-                label = str(index + 1)
+                if len(display_corners) == 4 and display_corners is self.corners and self.homography is not None:
+                    label = self.corner_labels[index]
+                else:
+                    label = f"{index + 1}/4"
                 cv2.putText(overlay, label, tuple(point), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            if len(display_corners) == 4 and display_corners is self.corners and self.homography is not None:
+                cv2.putText(overlay, "ORDER: TL -> TR -> BR -> BL", (10, overlay.shape[0] - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         if ball:
             center, radius = ball
             cv2.circle(overlay, (round(center[0]), round(center[1])), round(radius), (0, 255, 0), 2)
@@ -588,9 +801,13 @@ class BallVision:
     def _mouse_callback(self, event: int, x: int, y: int, _flags: int, _param: Any) -> None:
         if event != cv2.EVENT_LBUTTONDOWN or self.latest_frame is None:
             return
+        click_point = self._calibration_click_point(x, y)
+        if click_point is None:
+            return
+        click_x, click_y = click_point
         if self.mode == "ball_colour" and self.latest_hsv is not None:
-            if 0 <= y < self.latest_hsv.shape[0] and 0 <= x < self.latest_hsv.shape[1]:
-                hue, saturation, value = (int(component) for component in self.latest_hsv[y, x])
+            if 0 <= int(click_y) < self.latest_hsv.shape[0] and 0 <= int(click_x) < self.latest_hsv.shape[1]:
+                hue, saturation, value = (int(component) for component in self.latest_hsv[int(click_y), int(click_x)])
                 settings = self.config["ball_hsv"]
                 settings["hue"] = hue
                 settings["saturation_min"] = max(20, saturation - 70)
@@ -604,24 +821,36 @@ class BallVision:
             return
 
         if self.mode == "corners":
-            self.corners.append((float(x), float(y)))
-            clicked = self.corner_labels[len(self.corners) - 1]
-            print(f"C captured {clicked} corner ({x}, {y}).")
-            if len(self.corners) == 4:
-                self.config["platform"]["corners_px"] = self.corners
+            self.pending_corners.append(click_point)
+            print(f"C captured corner {len(self.pending_corners)}/4 ({click_x:.0f}, {click_y:.0f}).")
+            if len(self.pending_corners) == 4:
+                normalized, problem = normalize_platform_corners(self.pending_corners)
+                if problem is not None or normalized is None:
+                    self.pending_corners = []
+                    self.mode = "normal"
+                    print(f"C rejected platform border: {problem}")
+                    print("Old valid platform settings were kept. Press C to retry.")
+                    self._print_ready_checklist()
+                    return
+                self.corners = normalized
+                self.pending_corners = []
+                self.config["platform"]["corners_px"] = [list(point) for point in normalized]
                 self._rebuild_homography()
                 self.filtered_position = None
                 self.zero_reference = None
                 self.config.setdefault("control", {}).pop("zero_reference_mm", None)
+                self.corner_success_message = "C platform corners saved as TL/TR/BR/BL."
                 self.mode = "normal"
-                print("C saved platform border. D zero point must be selected for this border.")
+                print(f"C saved platform border TL/TR/BR/BL: {self.corners}")
+                print("C saved platform border. 請把球放中心後按 D. Cannot RUN until D is set again.")
                 self._save_and_report_ready()
             else:
-                print(f"C next: click {self.corner_labels[len(self.corners)]} corner.")
+                next_label = self.corner_labels[len(self.pending_corners)]
+                print(f"C next: click {next_label} corner ({len(self.pending_corners) + 1}/4).")
             return
 
         if self.mode == "zero":
-            position = self._platform_position((float(x), float(y)))
+            position = self._platform_position(click_point)
             if position is None:
                 print("D needs platform border first: press C and click all four corners.")
                 return
@@ -653,13 +882,11 @@ class BallVision:
             print("B: click the centre of the ball. Only HSV colour will be saved.")
         elif key == ord("c"):
             self._safe_ready("C selected. Back to READY; no live position or servo commands are being sent.")
-            self.corners = []
-            self.homography = None
+            self.pending_corners = []
             self.filtered_position = None
-            self.zero_reference = None
-            self.config.setdefault("control", {}).pop("zero_reference_mm", None)
             self.mode = "corners"
-            print("C: click platform corners in order: top-left, top-right, bottom-right, bottom-left.")
+            print("C: 依序點四角：TL -> TR -> BR -> BL（左上、右上、右下、左下）。")
+            print("C click progress will show 1/4..4/4. Old valid platform settings stay active unless the new four corners pass validation.")
         elif key == ord("d"):
             self._safe_ready("D selected. Back to READY; no live position or servo commands are being sent.")
             if self.homography is None:
@@ -695,9 +922,9 @@ class BallVision:
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         capture.set(cv2.CAP_PROP_FPS, requested_fps)
         if not self.headless:
-            cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+            cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
             cv2.setMouseCallback(WINDOW_NAME, self._mouse_callback)
-            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL/TR/BR/BL, D=zero point, R=RUN, P=READY/pause, Q=quit.")
+            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL->TR->BR->BL, D=zero point, R=RUN, P=READY/pause, Q=quit.")
             self._print_ready_checklist()
 
         frame_count = 0

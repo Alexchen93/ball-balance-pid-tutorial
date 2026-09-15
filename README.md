@@ -21,9 +21,9 @@ USB 攝影機 → OpenCV 球體辨識／透視校正 → USB Serial（POS / LOST
 | 路徑 | 用途 |
 | --- | --- |
 | `README.md` | 本文件：完整操作、校正與故障排除流程。 |
-| `Arduino_Nano_Ball_Balance/Arduino_Nano_Ball_Balance.ino` | 原始 Nano 正式 PID 韌體；**不含搖桿功能**。適合完成機構校正後的純相機控制。 |
-| `Arduino_Nano_Ball_Balance/README.md` | 原始 PID 韌體的接線、通訊協定與調參說明。 |
-| `Arduino_Nano_Ball_Balance_Joystick_Modes/Arduino_Nano_Ball_Balance_Joystick_Modes.ino` | 建議燒錄的搖桿校正版；保留相機/PID 功能，並增加開機自動 TEST 與搖桿單步控制。 |
+| `Arduino_Nano_Ball_Balance/Arduino_Nano_Ball_Balance.ino` | Nano 正式 Camera PID 韌體；**不含搖桿功能**。完成機構校正後，將中心／限幅常數回填到此檔並燒錄，用於正式相機控制。 |
+| `Arduino_Nano_Ball_Balance/README.md` | 正式 Camera PID 韌體的接線、通訊協定與調參說明。 |
+| `Arduino_Nano_Ball_Balance_Joystick_Modes/Arduino_Nano_Ball_Balance_Joystick_Modes.ino` | 搖桿機構校正版；用於空載找中心、測端點與輸出應回填的常數，不是正式 Camera PID 燒錄目標。 |
 | `Arduino_Nano_Ball_Balance_Joystick_Modes/README_Joystick_Discrete_Modes.md` | 搖桿 TEST 模式、MODE1/MODE2 與校正指令說明。 |
 | `Camera_Vision/ball_vision.py` | OpenCV 球體追蹤、透視轉換、Nano Serial 通訊與視窗互動。 |
 | `Camera_Vision/start_camera_vision.sh` | 啟動攝影機程式的便利腳本。 |
@@ -56,13 +56,13 @@ USB 攝影機 → OpenCV 球體辨識／透視校正 → USB Serial（POS / LOST
 
 ## 第一次使用：建議順序
 
-### 1. 安裝 Arduino 函式庫並燒錄
+### 1. 安裝 Arduino 函式庫並燒錄校正韌體
 
 在 Arduino IDE 的 Library Manager 安裝：
 
 - `Servo`
 
-開啟並燒錄：
+先開啟並燒錄搖桿機構校正版：
 
 ```text
 Arduino_Nano_Ball_Balance_Joystick_Modes/
@@ -73,7 +73,7 @@ Arduino_Nano_Ball_Balance_Joystick_Modes/
 
 > Arduino 會把同一 sketch 資料夾內所有 `.ino` 檔一起編譯；該資料夾只能保留主 `.ino`，不要將備份 `.ino` 放入其中。
 
-### 2. 用搖桿完成機構校正
+### 2. 用搖桿完成機構校正，再燒錄正式 Camera PID 韌體
 
 此版本開機後會**自動進入 TEST 模式**，不需要在開機時長按按鈕。預設為 MODE1。
 
@@ -97,7 +97,9 @@ Arduino_Nano_Ball_Balance_Joystick_Modes/
    SHOW
    ```
 
-   `SETC` 將目前角度設為測試中心；`SHOW` 印出可複製的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_LIMIT_OFFSET_DEG` 常數，並顯示推導後的 MIN/MAX 端點。把輸出值寫回 `.ino` 頂端的同名常數，再重新燒錄，中心與安全行程才會永久保存。
+   `SETC` 將目前角度設為測試中心；`SHOW` 印出可複製的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_LIMIT_OFFSET_DEG` 常數，並顯示推導後的 MIN/MAX 端點。把輸出值寫回 `Arduino_Nano_Ball_Balance/Arduino_Nano_Ball_Balance.ino` 頂端的同名常數，再燒錄此正式 Camera PID 韌體，中心與安全行程才會永久保存並交給相機控制使用。
+
+   Arduino Serial Monitor 會獨占 Nano serial port；完成 `SETC` / `SHOW` 後請關閉 Serial Monitor，再啟動 Camera Vision。若 Serial Monitor 或其他 serial 工具仍開著，launcher 會拒絕接手該 port 並印出忙碌診斷。
 
 ### 3. 安裝並校正攝影機
 
@@ -109,6 +111,8 @@ python3 -m venv .venv
 ./start_camera_vision.sh
 ```
 
+啟動選單中，`1` 會搜尋可讀寫且沒有被 Arduino Serial Monitor 佔用的 Nano，確認後開啟 READY 設定畫面；`2` 會以 `--no-serial` 開啟同一個 READY 設定畫面，只做鏡頭、HSV、四角與零點檢查，RUN 仍需稍後連上 Nano。
+
 先不接 Nano，確認辨識品質：
 
 ```bash
@@ -119,20 +123,22 @@ python3 -m venv .venv
 
 | 按鍵／操作 | 功能 |
 | --- | --- |
+| `a` | 重新套用已儲存的 `camera_config.json`，回到 READY checklist。 |
 | `b`，再點球 | 取樣球的 HSV 顏色；確認綠色圓圈穩定包住球。 |
-| `c` | 依序點平台左上、右上、右下、左下四角；結果存入 `camera_config.json`。 |
-| `0` | 將目標重設為平台中心 `(0, 0)` mm。 |
-| 左鍵點平台 | 設定新的平面座標目標。 |
-| `r` | 在 `READY` / `RUN` 間切換 PID。 |
+| `c` | 依序點平台左上、右上、右下、左下四角；幾何與順序正確才存入 `camera_config.json`。成功後會清除舊零點，必須重新按 `d`。 |
+| `d`，再點平台 | 將點到的位置設為平衡零點 `(0, 0)` mm。 |
+| `n` | 回 READY 並重新搜尋 Nano。 |
+| `p` | 回 READY，送出 `READY` 並停止 live `POS` / `LOST` / Servo 控制。 |
+| `r` | checklist 完成、球可見、Nano 已連線時啟動 RUN；RUN 中再按一次回 READY。 |
 | `q` / `Esc` | 安全停止並結束。 |
 
-固定鏡頭後才做四角校正；鏡頭或平台一移動，就要重新按 `c` 校正。平台實際寬、高可修改 `camera_config.json` 的 `width_mm`、`height_mm`。
+固定鏡頭後才做四角校正；鏡頭或平台一移動，就要重新按 `c` 校正。若點擊超出影像範圍、四角重複、退化、內凹或不是 TL→TR→BR→BL，程式會拒絕新設定並保留上一版有效平台設定。平台實際寬、高可修改 `camera_config.json` 的 `width_mm`、`height_mm`。
 
 ### 4. 調整 PID
 
 1. 先確認 Servo 中心、限幅與兩軸方向都已完成。
 2. 放球後先以單軸、小動作測試；按 `r` 啟動後若球被推得更遠，立刻按 `r` 停止，將對應的 `SERVO_X_DIRECTION` 或 `SERVO_Y_DIRECTION` 改為 `-1`。
-3. Nano 韌體是唯一 PID 參數來源；Camera Vision 只送 `POS`、`LOST`、`READY`、`RUN` 與必要 `TARGET`。
+3. Nano 韌體是唯一 PID 參數來源；Camera Vision 只送 `POS`、`LOST`、`READY`、`RUN`。
 4. 正式 `.ino` 現在採用未實機驗證的 normalized P-only 映射：`e_norm = clamp((target_mm - ball_mm) / POSITION_LIMIT_AXIS_MM, -1, +1)`，`u_norm = clamp(Kp*e_norm, -1, +1)`，`tilt_deg = u_norm * MAX_PLATFORM_TILT_AXIS_DEG`。
 5. 目前 X/Y `Kp=1.00`、`Ki=0.00`、`Kd=0.00`，X/Y `MAX_PLATFORM_TILT_*=8.0` 度；full-scale error 在 `Kp=1.0` 時要求 100% 最大平台傾角，`Kp=0.5` 時要求 50%。
 6. 若要調整 PID 或 max tilt，修改並重新燒錄 Nano `.ino`；重啟 Camera Vision 或改 `camera_config.json` 不會改 Nano PID。
