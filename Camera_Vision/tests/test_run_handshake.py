@@ -3,6 +3,8 @@ import io
 import time
 import unittest
 
+import numpy as np
+
 from ball_vision import BallVision
 
 
@@ -37,6 +39,8 @@ def make_vision():
     vision.run_start_events_seen = 0
     vision.run_start_last_event = None
     vision.latest_position = (12.34, -5.67)
+    vision.config = {"platform": {"width_mm": 520.0, "height_mm": 400.0}}
+    vision.zero_reference = np.array([30.0, -20.0], dtype=np.float32)
     vision.filtered_position = None
     vision.last_sent_at = 0.0
     vision.last_lost_at = 0.0
@@ -49,22 +53,38 @@ class RunHandshakeTest(unittest.TestCase):
 
         vision._request_run((12.34, -5.67))
         self.assertEqual(transport.discard_count, 1)
-        self.assertEqual(len(transport.sent), 1)
-        self.assertTrue(transport.sent[0].startswith("POS,12.34,-5.67,"))
+        self.assertEqual(transport.sent, ["GEOM,-290.00,230.00,-180.00,220.00"])
+        self.assertEqual(vision.run_start_phase, "wait_geom_ack")
+
+        transport.events = ["GEOM,OK"]
+        vision._handle_nano_events()
         self.assertEqual(vision.run_start_phase, "wait_pos_ack")
+        self.assertEqual(len(transport.sent), 2)
+        self.assertTrue(transport.sent[1].startswith("POS,12.34,-5.67,"))
 
         transport.events = ["STATE,READY"]
         vision._handle_nano_events()
         self.assertEqual(vision.run_start_phase, "wait_run_ack")
         self.assertFalse(vision.pid_running)
-        self.assertEqual(len(transport.sent), 3)
-        self.assertTrue(transport.sent[1].startswith("POS,12.34,-5.67,"))
-        self.assertEqual(transport.sent[2], "RUN")
+        self.assertEqual(len(transport.sent), 4)
+        self.assertTrue(transport.sent[2].startswith("POS,12.34,-5.67,"))
+        self.assertEqual(transport.sent[3], "RUN")
 
         transport.events = ["STATE,RUN"]
         vision._handle_nano_events()
         self.assertIsNone(vision.run_start_phase)
         self.assertTrue(vision.pid_running)
+
+    def test_geom_error_cancels_run_without_legacy_fallback(self):
+        vision, transport = make_vision()
+
+        vision._request_run((12.34, -5.67))
+        transport.events = ["ERROR,UNKNOWN_COMMAND"]
+        vision._handle_nano_events()
+
+        self.assertEqual(transport.sent, ["GEOM,-290.00,230.00,-180.00,220.00", "READY"])
+        self.assertIsNone(vision.run_start_phase)
+        self.assertFalse(vision.pid_running)
 
     def test_stale_state_ready_does_not_acknowledge_pos(self):
         vision, transport = make_vision()

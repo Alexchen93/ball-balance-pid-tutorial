@@ -60,6 +60,18 @@ class PlatformCornerGeometryTest(unittest.TestCase):
         )
 
 
+class PlatformGeometryTest(unittest.TestCase):
+    def test_zero_reference_creates_independent_asymmetric_edge_distances(self):
+        vision = BallVision.__new__(BallVision)
+        vision.config = {"platform": {"width_mm": 520.0, "height_mm": 400.0}}
+        vision.zero_reference = np.array([30.0, -20.0], dtype=np.float32)
+
+        geometry = vision._platform_geometry()
+
+        self.assertIsNotNone(geometry)
+        self.assertEqual(geometry.as_command(), "GEOM,-290.00,230.00,-180.00,220.00")
+
+
 class CalibrationClickPointTest(unittest.TestCase):
     def make_vision(self):
         vision = BallVision.__new__(BallVision)

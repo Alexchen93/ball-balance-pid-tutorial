@@ -60,6 +60,24 @@ class NanoTransportSerialTest(unittest.TestCase):
         )
         self.assertEqual(new_connection.writes, [b"READY\n", b"PING\n"])
 
+    def test_poll_returns_geometry_ack_event(self):
+        class BufferedConnection:
+            def __init__(self):
+                self.lines = [b"GEOM,OK\n"]
+
+            @property
+            def in_waiting(self):
+                return len(self.lines)
+
+            def readline(self):
+                return self.lines.pop(0)
+
+        transport = self.make_transport()
+        transport.connection = BufferedConnection()
+
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(transport.poll(), ["GEOM,OK"])
+
     def test_busy_connect_error_reports_holder_details(self):
         transport = self.make_transport()
         error = serial.SerialException("[Errno 16] Device or resource busy: '/dev/ttyUSB0'")

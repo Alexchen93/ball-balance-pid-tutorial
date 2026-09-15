@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import errno
 import glob
 import json
@@ -22,6 +23,21 @@ from serial.tools import list_ports
 
 CONTROL_AUTHORITY_LABEL = "PID SOURCE: Nano firmware only"
 WINDOW_NAME = f"Ball vision: {CONTROL_AUTHORITY_LABEL} | b=HSV c=TL-TR-BR-BL d=zero r=RUN p=READY q=quit"
+
+
+@dataclass(frozen=True)
+class PlatformGeometry:
+    x_min_mm: float
+    x_max_mm: float
+    y_min_mm: float
+    y_max_mm: float
+
+    def as_command(self) -> str:
+        return (
+            "GEOM,"
+            f"{self.x_min_mm:.2f},{self.x_max_mm:.2f},"
+            f"{self.y_min_mm:.2f},{self.y_max_mm:.2f}"
+        )
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -378,7 +394,7 @@ class NanoTransport:
                     self.last_terminal_controller_state = controller_state
                 else:
                     self.last_telemetry = line
-                    if line.startswith(("ERROR,", "STATE,", "POS,OK")):
+                    if line.startswith(("ERROR,", "STATE,", "POS,OK", "GEOM,OK")):
                         events.append(line)
                     print(f"NANO {line}")
         except (OSError, serial.SerialException) as error:
@@ -560,6 +576,41 @@ class BallVision:
         height = float(self.config["platform"]["height_mm"])
         return float(mapped[0] - width / 2.0), float(height / 2.0 - mapped[1])
 
+    def _platform_geometry(self) -> PlatformGeometry | None:
+        if self.zero_reference is None:
+            return None
+        width = float(self.config["platform"]["width_mm"])
+        height = float(self.config["platform"]["height_mm"])
+        zero_x = float(self.zero_reference[0])
+        zero_y = float(self.zero_reference[1])
+        geometry = PlatformGeometry(
+            x_min_mm=-width / 2.0 - zero_x,
+            x_max_mm=width / 2.0 - zero_x,
+            y_min_mm=-height / 2.0 - zero_y,
+            y_max_mm=height / 2.0 - zero_y,
+        )
+        values = (geometry.x_min_mm, geometry.x_max_mm, geometry.y_min_mm, geometry.y_max_mm)
+        if not all(math.isfinite(value) for value in values):
+            return None
+        if not (geometry.x_min_mm < 0.0 < geometry.x_max_mm and geometry.y_min_mm < 0.0 < geometry.y_max_mm):
+            return None
+        return geometry
+
+    def _send_geometry_config(self) -> bool:
+        geometry = self._platform_geometry()
+        if geometry is None:
+            print("Cannot RUN: C/D calibration does not put zero inside the calibrated platform edges. Press C and D again.")
+            return False
+        if not self.transport.send(geometry.as_command()):
+            print("Cannot RUN: failed to send calibrated platform geometry to Nano. Press n to reconnect, then R again.")
+            return False
+        print(
+            "Sent calibrated platform geometry to Nano: "
+            f"X[{geometry.x_min_mm:+.1f},{geometry.x_max_mm:+.1f}] mm, "
+            f"Y[{geometry.y_min_mm:+.1f},{geometry.y_max_mm:+.1f}] mm."
+        )
+        return True
+
     def _ball_mask(self, hsv: np.ndarray) -> np.ndarray:
         settings = self.config["ball_hsv"]
         hue = int(settings["hue"])
@@ -641,8 +692,23 @@ class BallVision:
 
     def _request_run(self, position: tuple[float, float]) -> None:
         self.transport.discard_pending_input()
+        if not self._send_geometry_config():
+            return
+        self.run_start_phase = "wait_geom_ack"
+        self.run_start_ack_position = position
+        self.run_start_pos_sent_at = 0.0
+        self.run_start_events_seen = 0
+        self.run_start_last_event = None
+        self.run_start_deadline = time.monotonic() + 0.6
+        print("RUN requested: waiting for Nano GEOM,OK before the fresh POS/RUN gate.")
+
+    def _send_initial_pos_after_geometry(self) -> None:
+        position = self.latest_position
+        if position is None:
+            self._safe_ready("RUN cancelled: ball was lost before Nano accepted geometry. Keep it visible, then press R again.")
+            return
         if not self._send_position_command(position):
-            print("Cannot RUN: failed to send fresh POS to Nano. Press n to reconnect, then R again.")
+            self._safe_ready("RUN cancelled: failed to send fresh POS after geometry ACK. Press n to reconnect, then R again.")
             return
         self.run_start_phase = "wait_pos_ack"
         self.run_start_ack_position = position
@@ -650,7 +716,7 @@ class BallVision:
         self.run_start_events_seen = 0
         self.run_start_last_event = None
         self.run_start_deadline = self.run_start_pos_sent_at + 0.6
-        print("RUN requested: sent fresh POS for this frame; POS,OK, matching TEL,READY,OK, or immediate STATE,READY will trigger a final POS immediately followed by RUN.")
+        print("Nano accepted calibrated geometry; sent fresh POS for this frame. POS,OK, matching TEL,READY,OK, or immediate STATE,READY will trigger a final POS immediately followed by RUN.")
 
     def _is_implicit_pos_ack(self, nano_event: str) -> bool:
         if self.run_start_ack_position is None:
@@ -698,6 +764,11 @@ class BallVision:
 
     def _run_handshake_timeout_detail(self) -> str:
         if self.run_start_events_seen == 0:
+            if self.run_start_phase == "wait_geom_ack":
+                return (
+                    "No Nano response was parsed after Python sent GEOM. Flash the current "
+                    "Arduino_Nano_Ball_Balance firmware; legacy firmware has no safe geometry fallback."
+                )
             return (
                 "No Nano response was parsed after Python sent POS. This usually means the flashed "
                 "firmware does not acknowledge POS, the Nano reset during USB open, or serial RX is not "
@@ -710,6 +781,13 @@ class BallVision:
             if self.run_start_phase is not None:
                 self.run_start_events_seen += 1
                 self.run_start_last_event = nano_event
+            if self.run_start_phase == "wait_geom_ack":
+                if nano_event == "GEOM,OK":
+                    self._send_initial_pos_after_geometry()
+                    continue
+                if nano_event.startswith("ERROR,"):
+                    self._safe_ready(f"RUN cancelled by Nano ({nano_event}). Upload the current formal Nano firmware if GEOM is unsupported.")
+                    continue
             if self.run_start_phase == "wait_pos_ack":
                 if nano_event.startswith("POS,OK"):
                     self._send_final_pos_and_run("POS,OK")

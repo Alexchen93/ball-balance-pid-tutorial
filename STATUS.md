@@ -1,35 +1,31 @@
-# Current Status
+# 平衡球 PID 平台目前狀態
 
-Updated: 2026-09-13 Asia/Taipei
+更新日期：2026-09-15
 
-## Completed in the current local working state
+## 已完成且已做程式層驗證
 
-- Camera READY calibration now has the three required phases completed: B, C, and D.
-- P remains a pause/hold state and is not treated as a completed calibration phase.
-- RUN startup keeps compatibility with the Nano `POS` handshake: current firmware should answer valid `POS` with `POS,OK`; the Python side can still tolerate the existing READY telemetry compatibility path when matching fresh coordinates are observed.
-- Camera Vision C calibration requires TL-TR-BR-BL click order, validates the four-point geometry, and rejects invalid or misordered geometry without overwriting the previous valid config.
-- Stored platform corner configs are checked on load/apply: invalid or misordered geometry blocks homography and requires C recalibration.
-- `camera_config.json` is a tracked editable default; live calibration changes should be reviewed before committing.
-- The launcher now ignores USB serial devices that exist but are not readable/writable by the current user, and reports blocked devices separately.
+- 正式控制流程由 Nano 韌體掌管 PID；Camera Vision 只在 RUN 前傳送平台幾何資訊與即時位置。
+- RUN 握手固定為：`GEOM` → `GEOM,OK` → fresh `POS` → `POS,OK` → final fresh `POS` + `RUN` → `STATE,RUN`。
+- 平台範圍由每次四角校正（C）與零點（D）推導，可處理不對稱的零點與平台邊界；Nano 依近、遠邊距離分別正規化 PID 誤差。
+- Servo X/Y 各自使用安全中心與安全端點；目前程式中的中心為 X=74°、Y=76°，安全行程為各軸中心 ±20°。
 
-## Current diagnostic focus
+## 2026-09-15 RUN 握手修正
 
-- New Nano normalized P-only mapping is implemented but not hardware-verified: `e_norm = clamp((target_mm - ball_mm) / POSITION_LIMIT_AXIS_MM, -1, +1)`, `u_norm = clamp(Kp*e_norm, -1, +1)`, `tilt_deg = u_norm * MAX_PLATFORM_TILT_AXIS_DEG`.
-- Previous P-only（Kp=.10, Ki=Kd=0）實機方向響應成功；that result does not validate the new Kp=1/max-tilt mapping.
-- Nano firmware is the single PID parameter source/control authority. Camera Vision does not save, send, or override PID settings.
-- Camera Vision restart or `camera_config.json` changes do not change Nano PID or max tilt. Any PID/max-tilt change requires editing and reflashing the `.ino`.
-- Continue with the Nano single-authority target: firmware remains the only PID parameter/control source; Camera Vision remains vision/serial state only.
+### 問題
 
-## Not yet proven on hardware
+Nano 已正確回覆 `GEOM,OK`，但 Python 的 `NanoTransport.poll()` 只把 `ERROR`、`STATE`、`POS,OK` 交給 RUN 狀態機。`GEOM,OK` 因此只顯示在終端，沒有推進 `wait_geom_ack`，造成 RUN 逾時並回到 READY。
 
-- Do not claim closed-loop stability yet; the current result only confirms P-only direction response.
-- Before claiming completed stable control, reflash the updated `.ino`, rerun C/D calibration after restart, and do single-axis tests under the Nano-owned normalized PID constants.
-- Keep D/parameter tuning and mapping checks as follow-up candidates if oscillation returns.
+### 修正
 
-## Observed issue
+- `Camera_Vision/ball_vision.py` 現在將 `GEOM,OK` 納入已解析事件。
+- `Camera_Vision/tests/test_nano_transport_serial.py` 新增 `GEOM,OK` 回歸測試，防止同類 ACK 再次被僅列印、不交給狀態機。
 
-- USB/CH340 re-enumeration was observed during testing. It is recorded as a symptom, not as the only confirmed root cause.
+### 驗證
 
-## Local files intentionally not committed
+在 `Camera_Vision/.venv` 執行全部單元測試：**19 tests passed**。
 
-- `Camera_Vision/camera_config.json.backup-20260912-225701` is an untracked local backup created during calibration/config changes. It is kept out of the commit unless repository tracking rules are deliberately changed.
+## 尚待實機確認
+
+- 需要重新啟動 Camera Vision，使用已燒錄目前 `Arduino_Nano_Ball_Balance.ino` 的 Nano 做一次受控 RUN 測試。
+- 測試前關閉 Arduino Serial Monitor，使用 A 套用已存設定，確認球置於中心；按 R 後預期會看到 `GEOM,OK`、`POS,OK`、`STATE,RUN` 與 `RUN confirmed`。
+- 若位置、相機或機構調整，重新執行 C（TL → TR → BR → BL）與 D（零點）後再 RUN。

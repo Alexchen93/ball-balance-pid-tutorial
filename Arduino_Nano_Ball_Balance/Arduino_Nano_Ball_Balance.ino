@@ -2,6 +2,7 @@
  * Ball-and-Plate controller: PC camera -> USB serial -> Arduino Nano PID
  *
  * PC-to-Nano protocol (ASCII, one command per LF-terminated line):
+ *   GEOM,<x_min_mm>,<x_max_mm>,<y_min_mm>,<y_max_mm>
  *   POS,<x_mm>,<y_mm>,<camera_timestamp_ms>
  *   LOST
  *   RUN | READY | TARGET,<x_mm>,<y_mm>
@@ -31,26 +32,25 @@ constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
 // 來源：校正程式的 SETC / SHOW 結果與學習單紀錄。
 // 注意：本次 JOYMOVE / TESTSTAT 觀測到 X=71、Y=76，只代表測試當下的輸出角度，
 // 不可當作正式 PID 的機構中心值。正式 PID 請只轉填/調整下列中心與安全行程常數。
-// 安全限制：中心應落在 SERVO_MIN_ANGLE 到 SERVO_MAX_ANGLE 之間，端點不可超出機構安全範圍。
+// 安全限制：中心應落在各軸 MIN/MAX 之間，端點不可超出校正安全範圍。
 // X 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填；本教案最終中心採 90 度。
 constexpr int SERVO_X_CENTER = 74;
 // Y 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填；本教案最終中心採 90 度。
 constexpr int SERVO_Y_CENTER = 76;
-// Servo 實體安全行程，只限制機構角度端點；不要拿來表示 PID 平台最大傾角。
-// 調整 OFFSET 即可改安全行程，不需要手算端點。
-// 若未來 X/Y 中心分開，須確認共用範圍仍適用，避免暗中改變 PID 行為。
+// Servo 實體安全行程，也是 normalized PID 輸出 100% 時的最大安全機構要求。
+// 調整 OFFSET 即可改每軸中心 ±安全端點，不需要手算端點；不要使用實體硬停點。
 constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
-constexpr int SERVO_MIN_ANGLE = SERVO_X_CENTER - SERVO_LIMIT_OFFSET_DEG;
-constexpr int SERVO_MAX_ANGLE = SERVO_X_CENTER + SERVO_LIMIT_OFFSET_DEG;
+constexpr int SERVO_X_MIN_ANGLE = SERVO_X_CENTER - SERVO_LIMIT_OFFSET_DEG;
+constexpr int SERVO_X_MAX_ANGLE = SERVO_X_CENTER + SERVO_LIMIT_OFFSET_DEG;
+constexpr int SERVO_Y_MIN_ANGLE = SERVO_Y_CENTER - SERVO_LIMIT_OFFSET_DEG;
+constexpr int SERVO_Y_MAX_ANGLE = SERVO_Y_CENTER + SERVO_LIMIT_OFFSET_DEG;
 // ===== 學生校正參數結束 =====
 
 constexpr int SERVO_X_DIRECTION = -1; // 已依左右邊緣實測反轉；若球被推向同側，再改回 1。
 constexpr int SERVO_Y_DIRECTION = 1;  // Change to -1 if the Y correction is reversed.
 
-constexpr float POSITION_LIMIT_X_MM = 260.0f;  // POS range and X full-scale error
-constexpr float POSITION_LIMIT_Y_MM = 200.0f;  // POS range and Y full-scale error
-constexpr float MAX_PLATFORM_TILT_X_DEG = 8.0f;
-constexpr float MAX_PLATFORM_TILT_Y_DEG = 8.0f;
+constexpr float MAX_PLATFORM_TILT_X_DEG = SERVO_LIMIT_OFFSET_DEG;
+constexpr float MAX_PLATFORM_TILT_Y_DEG = SERVO_LIMIT_OFFSET_DEG;
 constexpr float PID_INTEGRAL_LIMIT = 1.0f;
 constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
@@ -68,7 +68,7 @@ constexpr float DEFAULT_KI_Y = 0.00f;
 constexpr float DEFAULT_KD_Y = 0.00f;
 
 enum ControllerState : uint8_t { WAIT_LINK, READY, RUN };
-enum LinkState : uint8_t { LINK_WAIT, LINK_OK, BALL_LOST, LINK_LOST, POSITION_RANGE_ERROR };
+enum LinkState : uint8_t { LINK_WAIT, LINK_OK, BALL_LOST, LINK_LOST, POSITION_RANGE_ERROR, GEOMETRY_REQUIRED };
 
 struct PIDController {
   float kp;
@@ -113,11 +113,16 @@ ControllerState controllerState = WAIT_LINK;
 LinkState linkState = LINK_WAIT;
 bool newPositionAvailable = false;
 bool servoSaturated = false;
+bool geometryConfigured = false;
 
 float ballX = 0.0f;
 float ballY = 0.0f;
 float targetX = 0.0f;
 float targetY = 0.0f;
+float positionMinX = 0.0f;
+float positionMaxX = 0.0f;
+float positionMinY = 0.0f;
+float positionMaxY = 0.0f;
 float errorNormX = 0.0f;
 float errorNormY = 0.0f;
 float outputNormX = 0.0f;
@@ -151,14 +156,15 @@ const char *linkStateName(LinkState state) {
     case BALL_LOST: return "BALL";
     case LINK_LOST: return "LOST";
     case POSITION_RANGE_ERROR: return "RANGE";
+    case GEOMETRY_REQUIRED: return "GEOM";
   }
   return "?";
 }
 
 void writeNeutralServos() {
   // 中心與安全端點統一使用上方「學生校正參數」，不要在其他地方重複硬編碼角度。
-  servoAngleX = constrain(SERVO_X_CENTER, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
-  servoAngleY = constrain(SERVO_Y_CENTER, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+  servoAngleX = constrain(SERVO_X_CENTER, SERVO_X_MIN_ANGLE, SERVO_X_MAX_ANGLE);
+  servoAngleY = constrain(SERVO_Y_CENTER, SERVO_Y_MIN_ANGLE, SERVO_Y_MAX_ANGLE);
   servoX.write(servoAngleX);
   servoY.write(servoAngleY);
 }
@@ -193,6 +199,36 @@ bool positionIsFresh() {
   return linkState == LINK_OK && (uint32_t)(millis() - lastPositionMs) <= POSITION_TIMEOUT_MS;
 }
 
+bool positionWithinGeometry(float x, float y) {
+  return geometryConfigured && x >= positionMinX && x <= positionMaxX &&
+         y >= positionMinY && y <= positionMaxY;
+}
+
+bool targetWithinGeometry(float x, float y) {
+  return geometryConfigured && x >= positionMinX && x <= positionMaxX &&
+         y >= positionMinY && y <= positionMaxY;
+}
+
+bool configureGeometry(float xMin, float xMax, float yMin, float yMax) {
+  if (!(xMin < 0.0f && xMax > 0.0f && yMin < 0.0f && yMax > 0.0f)) {
+    return false;
+  }
+  if ((xMax - xMin) < 20.0f || (yMax - yMin) < 20.0f ||
+      (xMax - xMin) > 1000.0f || (yMax - yMin) > 1000.0f) {
+    return false;
+  }
+  positionMinX = xMin;
+  positionMaxX = xMax;
+  positionMinY = yMin;
+  positionMaxY = yMax;
+  geometryConfigured = true;
+  if (!targetWithinGeometry(targetX, targetY)) {
+    targetX = 0.0f;
+    targetY = 0.0f;
+  }
+  return targetWithinGeometry(targetX, targetY);
+}
+
 bool parseFloat(const char *text, float &value) {
   if (text == NULL) {
     return false;
@@ -213,7 +249,12 @@ bool parseUnsigned(const char *text, uint32_t &value) {
 
 void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
   (void)cameraTimestampMs;  // Nano uses arrival time for its real PID delta-time.
-  if (fabs(x) > POSITION_LIMIT_X_MM || fabs(y) > POSITION_LIMIT_Y_MM) {
+  if (!geometryConfigured) {
+    Serial.println(F("ERROR,GEOM_REQUIRED"));
+    stopControl(GEOMETRY_REQUIRED);
+    return;
+  }
+  if (!positionWithinGeometry(x, y)) {
     Serial.println(F("ERROR,POSITION_OUT_OF_RANGE"));
     stopControl(POSITION_RANGE_ERROR);
     return;
@@ -231,21 +272,26 @@ void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
   Serial.println(F("POS,OK"));
 }
 
-float normalizedPositionError(float targetMm, float ballMm, float limitMm) {
-  return constrain((targetMm - ballMm) / limitMm, -1.0f, 1.0f);
+float normalizedPositionError(float targetMm, float ballMm, float minMm, float maxMm) {
+  const float errorMm = targetMm - ballMm;
+  const float denominator = errorMm >= 0.0f ? targetMm - minMm : maxMm - targetMm;
+  if (denominator <= 0.0f) {
+    return 0.0f;
+  }
+  return constrain(errorMm / denominator, -1.0f, 1.0f);
 }
 
 void updateServos() {
   // Platform tilt requests come from normalized PID output; servo endpoints are separate physical safety bounds.
   const float requestedX = SERVO_X_CENTER + SERVO_X_DIRECTION * requestedTiltX;
   const float requestedY = SERVO_Y_CENTER + SERVO_Y_DIRECTION * requestedTiltY;
-  servoAngleX = constrain((int)round(requestedX), SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
-  servoAngleY = constrain((int)round(requestedY), SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+  servoAngleX = constrain((int)round(requestedX), SERVO_X_MIN_ANGLE, SERVO_X_MAX_ANGLE);
+  servoAngleY = constrain((int)round(requestedY), SERVO_Y_MIN_ANGLE, SERVO_Y_MAX_ANGLE);
   servoX.write(servoAngleX);
   servoY.write(servoAngleY);
 
-  servoSaturated = servoAngleX == SERVO_MIN_ANGLE || servoAngleX == SERVO_MAX_ANGLE ||
-                    servoAngleY == SERVO_MIN_ANGLE || servoAngleY == SERVO_MAX_ANGLE;
+  servoSaturated = servoAngleX == SERVO_X_MIN_ANGLE || servoAngleX == SERVO_X_MAX_ANGLE ||
+                    servoAngleY == SERVO_Y_MIN_ANGLE || servoAngleY == SERVO_Y_MAX_ANGLE;
   if (servoSaturated && saturationStartedMs == 0) {
     saturationStartedMs = millis();
   }
@@ -264,8 +310,8 @@ void updatePidForPosition() {
                               ? 0.033f
                               : constrain((nowUs - lastPidUs) / 1000000.0f, 0.010f, 0.150f);
   lastPidUs = nowUs;
-  errorNormX = normalizedPositionError(targetX, ballX, POSITION_LIMIT_X_MM);
-  errorNormY = normalizedPositionError(targetY, ballY, POSITION_LIMIT_Y_MM);
+  errorNormX = normalizedPositionError(targetX, ballX, positionMinX, positionMaxX);
+  errorNormY = normalizedPositionError(targetY, ballY, positionMinY, positionMaxY);
   outputNormX = pidX.update(errorNormX, dtSeconds);
   outputNormY = pidY.update(errorNormY, dtSeconds);
   requestedTiltX = outputNormX * MAX_PLATFORM_TILT_X_DEG;
@@ -309,7 +355,8 @@ void updateStatusLed() {
 }
 
 void printHelp() {
-  Serial.println(F("PC protocol: POS,x,y,timestamp -> POS,OK | final POS immediately before RUN | LOST | READY"));
+  Serial.println(F("PC protocol: GEOM,xmin,xmax,ymin,ymax -> GEOM,OK before POS/RUN"));
+  Serial.println(F("POS,x,y,timestamp -> POS,OK | final POS immediately before RUN | LOST | READY"));
   Serial.println(F("TARGET,x,y | PING | HELP"));
   Serial.println(F("PID source: Nano firmware only; PIDX/PIDY return ERROR,PID_MANAGED_BY_NANO"));
 }
@@ -320,7 +367,19 @@ void processCommand(char *line) {
     return;
   }
 
-  if (strcmp(command, "POS") == 0) {
+  if (strcmp(command, "GEOM") == 0) {
+    float xMin, xMax, yMin, yMax;
+    if (parseFloat(strtok(NULL, ","), xMin) && parseFloat(strtok(NULL, ","), xMax) &&
+        parseFloat(strtok(NULL, ","), yMin) && parseFloat(strtok(NULL, ","), yMax) &&
+        strtok(NULL, ",") == NULL && controllerState != RUN && configureGeometry(xMin, xMax, yMin, yMax)) {
+      stopControl(positionIsFresh() ? LINK_OK : LINK_WAIT);
+      Serial.println(F("GEOM,OK"));
+    } else {
+      geometryConfigured = false;
+      Serial.println(F("ERROR,BAD_GEOM"));
+      stopControl(GEOMETRY_REQUIRED);
+    }
+  } else if (strcmp(command, "POS") == 0) {
     float x, y;
     uint32_t timestamp;
     if (parseFloat(strtok(NULL, ","), x) && parseFloat(strtok(NULL, ","), y) &&
@@ -332,7 +391,10 @@ void processCommand(char *line) {
   } else if (strcmp(command, "LOST") == 0 && strtok(NULL, ",") == NULL) {
     stopControl(BALL_LOST);
   } else if (strcmp(command, "RUN") == 0 && strtok(NULL, ",") == NULL) {
-    if (positionIsFresh()) {
+    if (!geometryConfigured) {
+      Serial.println(F("ERROR,GEOM_REQUIRED"));
+      stopControl(GEOMETRY_REQUIRED);
+    } else if (positionIsFresh()) {
       controllerState = RUN;
       resetControllers();
       Serial.println(F("STATE,RUN"));
@@ -346,7 +408,7 @@ void processCommand(char *line) {
   } else if (strcmp(command, "TARGET") == 0) {
     float x, y;
     if (parseFloat(strtok(NULL, ","), x) && parseFloat(strtok(NULL, ","), y) &&
-        strtok(NULL, ",") == NULL && fabs(x) <= POSITION_LIMIT_X_MM && fabs(y) <= POSITION_LIMIT_Y_MM) {
+        strtok(NULL, ",") == NULL && targetWithinGeometry(x, y)) {
       targetX = x;
       targetY = y;
       Serial.println(F("TARGET,OK"));

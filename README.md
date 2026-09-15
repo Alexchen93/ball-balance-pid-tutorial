@@ -138,12 +138,12 @@ python3 -m venv .venv
 
 1. 先確認 Servo 中心、限幅與兩軸方向都已完成。
 2. 放球後先以單軸、小動作測試；按 `r` 啟動後若球被推得更遠，立刻按 `r` 停止，將對應的 `SERVO_X_DIRECTION` 或 `SERVO_Y_DIRECTION` 改為 `-1`。
-3. Nano 韌體是唯一 PID 參數來源；Camera Vision 只送 `POS`、`LOST`、`READY`、`RUN`。
-4. 正式 `.ino` 現在採用未實機驗證的 normalized P-only 映射：`e_norm = clamp((target_mm - ball_mm) / POSITION_LIMIT_AXIS_MM, -1, +1)`，`u_norm = clamp(Kp*e_norm, -1, +1)`，`tilt_deg = u_norm * MAX_PLATFORM_TILT_AXIS_DEG`。
-5. 目前 X/Y `Kp=1.00`、`Ki=0.00`、`Kd=0.00`，X/Y `MAX_PLATFORM_TILT_*=8.0` 度；full-scale error 在 `Kp=1.0` 時要求 100% 最大平台傾角，`Kp=0.5` 時要求 50%。
-6. 若要調整 PID 或 max tilt，修改並重新燒錄 Nano `.ino`；重啟 Camera Vision 或改 `camera_config.json` 不會改 Nano PID。
+3. Nano 韌體是唯一 PID 參數與控制權威；Camera Vision 只送 `GEOM`、`POS`、`LOST`、`READY`、`RUN`，不送 PID 或 Servo 角。
+4. 正式 `.ino` 現在採用未實機驗證的 asymmetric normalized P-only 映射：Camera 先送 `GEOM,x_min,x_max,y_min,y_max`；Nano 以 `error_mm = target_mm - ball_mm`，正向誤差除以 `target_mm - min_mm`，負向誤差除以 `max_mm - target_mm`，再 clamp 到 `[-1,+1]`。
+5. 目前 X/Y `Kp=1.00`、`Ki=0.00`、`Kd=0.00`；full-scale edge error 在 `Kp=1.0` 時要求該軸中心 ±20° 的校正安全端點，`Kp=0.5` 時要求 50%。
+6. 若要調整 PID、方向或安全端點，修改並重新燒錄 Nano `.ino`；重啟 Camera Vision 或改 `camera_config.json` 不會改 Nano PID。
 
-平台最大要求傾角和 Servo 實體安全端點是不同限制：`MAX_PLATFORM_TILT_*_DEG` 決定 PID 可要求的傾角，`SERVO_LIMIT_OFFSET_DEG` / `SERVO_MIN_ANGLE` / `SERVO_MAX_ANGLE` 只保護機構角度端點。預設 P-only 參數是新控制模型的安全起點，尚未完成實機閉迴路驗證。
+`GEOM` 來自當次 `C` 四角與 `D` 零點：`x_min=-width/2-zero_x`、`x_max=width/2-zero_x`、`y_min=-height/2-zero_y`、`y_max=height/2-zero_y`。近邊與遠邊距離可不對稱，但都會各自映射到 full-scale safe endpoint；舊固定 X ±260 mm、Y ±200 mm 與 ±8° 映射已移除。預設 P-only 參數是新控制模型的安全起點，尚未完成實機閉迴路驗證。
 
 ## 常用 Serial 指令（搖桿校正版）
 

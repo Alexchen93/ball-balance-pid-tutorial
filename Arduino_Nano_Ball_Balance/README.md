@@ -17,7 +17,7 @@ Servo 必須使用獨立、足夠電流的 5–6 V BEC／DC-DC 供電，且其 G
 
 1. 安裝 Arduino Library Manager 的 `Servo`。
 2. 燒錄 `Arduino_Nano_Ball_Balance.ino` 到 Arduino Nano（115200 baud）。若舊款 Nano 無法燒錄，選擇 `ATmega328P (Old Bootloader)`。
-3. 先用 `../Arduino_Nano_Ball_Balance_Joystick_Modes/` 的搖桿校正韌體讓平台空載找中心與端點；依 `SETC` / `SHOW` 與學習單結果，回填本正式 PID 檔開頭「學生校正參數（校正完成後只修改本區）」中的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_LIMIT_OFFSET_DEG`；`SERVO_MIN_ANGLE` / `SERVO_MAX_ANGLE` 會由 X 中心 ± offset 推導。此為 Servo 實體安全端點，和 `MAX_PLATFORM_TILT_X_DEG` / `MAX_PLATFORM_TILT_Y_DEG` 的平台最大要求傾角是兩件事。
+3. 先用 `../Arduino_Nano_Ball_Balance_Joystick_Modes/` 的搖桿校正韌體讓平台空載找中心與端點；依 `SETC` / `SHOW` 與學習單結果，回填本正式 PID 檔開頭「學生校正參數（校正完成後只修改本區）」中的 `SERVO_X_CENTER`、`SERVO_Y_CENTER`、`SERVO_LIMIT_OFFSET_DEG`。正式 PID 會分別推導 `SERVO_X_MIN/MAX_ANGLE` 與 `SERVO_Y_MIN/MAX_ANGLE`，避免 Y 軸誤用 X 軸端點。`SERVO_LIMIT_OFFSET_DEG=20` 是校正安全端點，不是實體硬停點。
 4. 以小角度測試每軸，若平台修正方向相反，將對應 `SERVO_*_DIRECTION` 改為 `-1`。
 5. 完成 Desktop 攝影機的四角校正與球色取樣後，才從 Desktop 視窗按 `r` 開始 PID。
 
@@ -28,6 +28,7 @@ Arduino IDE Serial Monitor 會獨占 Nano serial port；校正時可用它輸入
 Desktop 會送出：
 
 ```text
+GEOM,-290.0,230.0,-180.0,220.0
 POS,12.4,-8.7,12345
 LOST
 RUN
@@ -41,11 +42,8 @@ Nano 每秒回傳 10 筆 `TEL,...` 資料，包含目前座標、normalized erro
 TEL,state,link,x_mm,y_mm,e_x_pct,e_y_pct,u_x_pct,u_y_pct,tilt_x_deg,tilt_y_deg,servo_x,servo_y,age_ms
 ```
 
-Nano 韌體是唯一 PID 參數來源與控制權威；Camera Vision 不會保存、下發或覆寫 PID。
-成功接受合法 `POS` 時，正式韌體會立即回 `POS,OK`。Camera Vision 會用這個 ACK 作為 RUN 前的 freshness gate，接著再送最後一筆 fresh `POS` 與 `RUN`，並等待 `STATE,RUN` 後才開始連續傳送座標。
-目前正式 `.ino` 使用新的未實機驗證控制模型：先以 `POSITION_LIMIT_X_MM=260.0`、`POSITION_LIMIT_Y_MM=200.0` 正規化座標誤差，
-`e_norm = clamp((target_mm - ball_mm) / POSITION_LIMIT_AXIS_MM, -1, +1)`；再於無單位 normalized space 計算
-`u_norm = Kp*e_norm + Ki*integral(e_norm*dt) + Kd*derivative(e_norm)`，並 clamp 到 `[-1,+1]`；最後 `tilt_deg = u_norm * MAX_PLATFORM_TILT_AXIS_DEG`。
-P-only 常數為 X/Y `Kp=1.00`、`Ki=0.00`、`Kd=0.00`，平台最大要求傾角為 X/Y `MAX_PLATFORM_TILT_*=8.0` 度。
-含義：球在該軸 full-scale error 時，`Kp=1.0` 要求 100% 最大平台傾角；若 `Kp=0.5` 則只要求 50%。
-若要讓任何 PID 或 max tilt 變更生效，必須修改並重新燒錄 `.ino`。舊 `PIDX`/`PIDY` 命令會被明確拒絕並回 `ERROR,PID_MANAGED_BY_NANO`。
+Nano 韌體是唯一 PID 參數來源與控制權威；Camera Vision 不會保存、下發或覆寫 PID。Camera Vision 只會在 RUN 前依目前 `C` 四角 homography 與 `D` 零點送一次 `GEOM,x_min,x_max,y_min,y_max`，Nano 驗證零點落在四邊內後回 `GEOM,OK`。若 Nano 回 `ERROR,BAD_GEOM` / `ERROR,GEOM_REQUIRED`，或舊韌體回 `ERROR,UNKNOWN_COMMAND`，Camera Vision 會留在 READY；沒有使用舊 ±260/±200 的 fallback。
+成功接受合法 `POS` 時，正式韌體會立即回 `POS,OK`。Camera Vision 的 RUN handshake 是 `GEOM -> GEOM,OK -> fresh POS -> POS,OK -> final fresh POS + RUN -> STATE,RUN`，之後才開始連續傳送座標。
+正式 `.ino` 以 Camera 傳入的校正邊界正規化座標誤差。對每軸：`error_mm = target_mm - ball_mm`；若 `error_mm >= 0`，分母為 `target_mm - min_mm`；若 `error_mm < 0`，分母為 `max_mm - target_mm`；`e_norm = clamp(error_mm / denominator, -1, +1)`。因此零點偏離中心時，近邊與遠邊會各自映射到該方向的 full-scale error，而不是共用對稱分母。
+PID 仍在 Nano 內以 `u_norm = Kp*e_norm + Ki*integral(e_norm*dt) + Kd*derivative(e_norm)` 計算並 clamp 到 `[-1,+1]`；`tilt_deg = u_norm * 20`，再依 `SERVO_*_DIRECTION` 寫到各軸中心 ±20° 的校正安全端點。P-only 常數為 X/Y `Kp=1.00`、`Ki=0.00`、`Kd=0.00`。
+若要讓任何 PID、方向或安全端點變更生效，必須修改並重新燒錄 `.ino`。舊 `PIDX`/`PIDY` 命令會被明確拒絕並回 `ERROR,PID_MANAGED_BY_NANO`。
