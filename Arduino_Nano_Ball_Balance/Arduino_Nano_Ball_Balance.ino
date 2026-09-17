@@ -2,10 +2,10 @@
  * Ball-and-Plate controller: PC camera -> USB serial -> Arduino Nano PID
  *
  * PC-to-Nano protocol (ASCII, one command per LF-terminated line):
- *   GEOM,<x_min_mm>,<x_max_mm>,<y_min_mm>,<y_max_mm>
- *   POS,<x_mm>,<y_mm>,<camera_timestamp_ms>
+ *   GEOM,<x_min_pct>,<x_max_pct>,<y_min_pct>,<y_max_pct>
+ *   POS,<x_pct>,<y_pct>,<camera_timestamp_ms>
  *   LOST
- *   RUN | READY | TARGET,<x_mm>,<y_mm>
+ *   RUN | READY | TARGET,<x_pct>,<y_pct>
  *   PING | HELP
  *
  * Nano firmware is the only PID parameter source/control authority.
@@ -14,7 +14,7 @@
  * POS replies with POS,OK after the Nano accepts a fresh in-range sample.
  * RUN must be immediately preceded by a fresh accepted POS; READY stops PID and returns servos to neutral.
  * Nano telemetry (10 Hz):
- *   TEL,<state>,<link>,<x>,<y>,<e_x_pct>,<e_y_pct>,<u_x_pct>,<u_y_pct>,<tilt_x_deg>,<tilt_y_deg>,<servo_x>,<servo_y>,<age_ms>
+ *   TEL,<state>,<link>,<x_pct>,<y_pct>,<e_x_pct>,<e_y_pct>,<u_x_pct>,<u_y_pct>,<tilt_x_deg>,<tilt_y_deg>,<servo_x>,<servo_y>,<age_ms>
  *
  * Libraries to install from Arduino Library Manager:
  *   Servo
@@ -55,17 +55,21 @@ constexpr float PID_INTEGRAL_LIMIT = 1.0f;
 constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
 constexpr uint32_t SATURATION_WARNING_MS = 2000UL;
+constexpr float POSITION_RANGE_EPSILON_PCT = 0.50f;
 
 // Nano firmware is the single source of truth for PID constants. Camera Vision
 // sends only vision/control-state commands and must not override these values.
 // PID runs in normalized space: Kp=1.0 means a full-scale position error
 // requests 100% of MAX_PLATFORM_TILT_*_DEG; Kp=0.5 would request 50%.
-constexpr float DEFAULT_KP_X = 1.00f;
+// Initial PD tune for a ball that carries outward momentum near an edge.
+// Higher Kp starts the return tilt earlier; small Kd adds speed-proportional
+// braking. Keep Ki at zero: it cannot brake a moving ball and can add overshoot.
+constexpr float DEFAULT_KP_X = 1.25f;
 constexpr float DEFAULT_KI_X = 0.00f;
-constexpr float DEFAULT_KD_X = 0.00f;
-constexpr float DEFAULT_KP_Y = 1.00f;
+constexpr float DEFAULT_KD_X = 0.5f;
+constexpr float DEFAULT_KP_Y = 1.25f;
 constexpr float DEFAULT_KI_Y = 0.00f;
-constexpr float DEFAULT_KD_Y = 0.00f;
+constexpr float DEFAULT_KD_Y = 0.5f;
 
 enum ControllerState : uint8_t { WAIT_LINK, READY, RUN };
 enum LinkState : uint8_t { LINK_WAIT, LINK_OK, BALL_LOST, LINK_LOST, POSITION_RANGE_ERROR, GEOMETRY_REQUIRED };
@@ -200,12 +204,16 @@ bool positionIsFresh() {
 }
 
 bool positionWithinGeometry(float x, float y) {
-  return geometryConfigured && x >= positionMinX && x <= positionMaxX &&
-         y >= positionMinY && y <= positionMaxY;
+  return geometryConfigured && isfinite(x) && isfinite(y) &&
+         x >= positionMinX - POSITION_RANGE_EPSILON_PCT &&
+         x <= positionMaxX + POSITION_RANGE_EPSILON_PCT &&
+         y >= positionMinY - POSITION_RANGE_EPSILON_PCT &&
+         y <= positionMaxY + POSITION_RANGE_EPSILON_PCT;
 }
 
 bool targetWithinGeometry(float x, float y) {
-  return geometryConfigured && x >= positionMinX && x <= positionMaxX &&
+  return geometryConfigured && isfinite(x) && isfinite(y) &&
+         x >= positionMinX && x <= positionMaxX &&
          y >= positionMinY && y <= positionMaxY;
 }
 
@@ -214,7 +222,7 @@ bool configureGeometry(float xMin, float xMax, float yMin, float yMax) {
     return false;
   }
   if ((xMax - xMin) < 20.0f || (yMax - yMin) < 20.0f ||
-      (xMax - xMin) > 1000.0f || (yMax - yMin) > 1000.0f) {
+      (xMax - xMin) > 250.0f || (yMax - yMin) > 250.0f) {
     return false;
   }
   positionMinX = xMin;
@@ -260,8 +268,8 @@ void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
     return;
   }
 
-  ballX = x;
-  ballY = y;
+  ballX = constrain(x, positionMinX, positionMaxX);
+  ballY = constrain(y, positionMinY, positionMaxY);
   lastPositionMs = millis();
   linkState = LINK_OK;
   newPositionAvailable = true;
@@ -272,13 +280,13 @@ void acceptPosition(float x, float y, uint32_t cameraTimestampMs) {
   Serial.println(F("POS,OK"));
 }
 
-float normalizedPositionError(float targetMm, float ballMm, float minMm, float maxMm) {
-  const float errorMm = targetMm - ballMm;
-  const float denominator = errorMm >= 0.0f ? targetMm - minMm : maxMm - targetMm;
+float normalizedPositionError(float targetPct, float ballPct, float minPct, float maxPct) {
+  const float errorPct = targetPct - ballPct;
+  const float denominator = errorPct >= 0.0f ? targetPct - minPct : maxPct - targetPct;
   if (denominator <= 0.0f) {
     return 0.0f;
   }
-  return constrain(errorMm / denominator, -1.0f, 1.0f);
+  return constrain(errorPct / denominator, -1.0f, 1.0f);
 }
 
 void updateServos() {
@@ -355,8 +363,8 @@ void updateStatusLed() {
 }
 
 void printHelp() {
-  Serial.println(F("PC protocol: GEOM,xmin,xmax,ymin,ymax -> GEOM,OK before POS/RUN"));
-  Serial.println(F("POS,x,y,timestamp -> POS,OK | final POS immediately before RUN | LOST | READY"));
+  Serial.println(F("PC protocol: GEOM,xmin_pct,xmax_pct,ymin_pct,ymax_pct -> GEOM,OK before POS/RUN"));
+  Serial.println(F("POS,x_pct,y_pct,timestamp -> POS,OK | final POS immediately before RUN | LOST | READY"));
   Serial.println(F("TARGET,x,y | PING | HELP"));
   Serial.println(F("PID source: Nano firmware only; PIDX/PIDY return ERROR,PID_MANAGED_BY_NANO"));
 }

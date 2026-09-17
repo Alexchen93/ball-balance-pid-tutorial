@@ -17,12 +17,12 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def normalized_error(target_mm: float, ball_mm: float, min_mm: float, max_mm: float) -> float:
-    error_mm = target_mm - ball_mm
-    denominator = target_mm - min_mm if error_mm >= 0.0 else max_mm - target_mm
+def normalized_error(target_pct: float, ball_pct: float, min_pct: float, max_pct: float) -> float:
+    error_pct = target_pct - ball_pct
+    denominator = target_pct - min_pct if error_pct >= 0.0 else max_pct - target_pct
     if denominator <= 0.0:
         return 0.0
-    return clamp(error_mm / denominator, -1.0, 1.0)
+    return clamp(error_pct / denominator, -1.0, 1.0)
 
 
 def p_only_output(error_norm: float, kp: float = KP) -> float:

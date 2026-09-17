@@ -10,44 +10,40 @@
     "height_mm": 180.0,
     "corners_px": [
       [
-        153.0,
-        169.0
+        118.0,
+        197.0
       ],
       [
-        417.0,
-        170.0
+        340.0,
+        175.0
       ],
       [
-        542.0,
-        282.0
+        447.0,
+        327.0
       ],
       [
-        68.0,
-        294.0
+        119.0,
+        384.0
       ]
     ]
   },
   "ball_hsv": {
-    "hue": 82,
+    "hue": 170,
     "hue_tolerance": 12,
-    "saturation_min": 104,
-    "value_min": 20
+    "saturation_min": 128,
+    "value_min": 133
   },
   "detection": {
     "min_radius_px": 4.0,
     "max_radius_px": 80.0,
     "filter_alpha": 0.35,
-    "morph_kernel_px": 5
+    "morph_kernel_px": 5,
+    "contact_offset_radius": 0.85
   },
   "transport": {
     "baudrate": 115200,
     "update_hz": 30,
     "lost_heartbeat_hz": 5
   },
-  "control": {
-    "zero_reference_mm": [
-      25.99,
-      75.65
-    ]
-  }
+  "control": {}
 }

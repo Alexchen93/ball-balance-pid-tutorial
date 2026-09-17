@@ -22,21 +22,23 @@ from serial.tools import list_ports
 
 
 CONTROL_AUTHORITY_LABEL = "PID SOURCE: Nano firmware only"
-WINDOW_NAME = f"Ball vision: {CONTROL_AUTHORITY_LABEL} | b=HSV c=TL-TR-BR-BL d=zero r=RUN p=READY q=quit"
+PLATFORM_HALF_SPAN_PCT = 100.0
+PLATFORM_FULL_SPAN_PCT = PLATFORM_HALF_SPAN_PCT * 2.0
+WINDOW_NAME = f"Ball vision: {CONTROL_AUTHORITY_LABEL} | b=HSV c=TL-TR-BR-BL r=RUN p=READY q=quit"
 
 
 @dataclass(frozen=True)
 class PlatformGeometry:
-    x_min_mm: float
-    x_max_mm: float
-    y_min_mm: float
-    y_max_mm: float
+    x_min_pct: float
+    x_max_pct: float
+    y_min_pct: float
+    y_max_pct: float
 
     def as_command(self) -> str:
         return (
             "GEOM,"
-            f"{self.x_min_mm:.2f},{self.x_max_mm:.2f},"
-            f"{self.y_min_mm:.2f},{self.y_max_mm:.2f}"
+            f"{self.x_min_pct:.2f},{self.x_max_pct:.2f},"
+            f"{self.y_min_pct:.2f},{self.y_max_pct:.2f}"
         )
 
 
@@ -46,6 +48,10 @@ def load_config(path: Path) -> dict[str, Any]:
     if "pid" in config:
         config.pop("pid", None)
         print("DEPRECATED CONFIG: ignored camera_config.json 'pid'; PID parameters are managed only by Nano firmware.")
+    control = config.setdefault("control", {})
+    if "zero_reference_mm" in control and "zero_reference_pct" not in control:
+        control.pop("zero_reference_mm", None)
+        print("DEPRECATED CONFIG: ignored zero_reference_mm; zero is now always the calibrated platform centre.")
     return config
 
 
@@ -430,12 +436,7 @@ class BallVision:
         self.corner_order_message: str | None = None
         self.corner_success_message: str | None = None
         self.filtered_position: np.ndarray | None = None
-        stored_reference = config.get("control", {}).get("zero_reference_mm")
-        self.zero_reference: np.ndarray | None = (
-            np.array(stored_reference, dtype=np.float32)
-            if isinstance(stored_reference, list) and len(stored_reference) == 2
-            else None
-        )
+        self.zero_reference = np.array([0.0, 0.0], dtype=np.float32)
         self.latest_frame: np.ndarray | None = None
         self.latest_hsv: np.ndarray | None = None
         self.corner_labels = CORNER_LABELS_TLTRBRBL
@@ -449,6 +450,7 @@ class BallVision:
         self.last_sent_at = 0.0
         self.last_lost_at = 0.0
         self.latest_position: tuple[float, float] | None = None
+        self.last_outside_platform_position: tuple[float, float] | None = None
         self.last_frame_at = time.monotonic()
         self.fps = 0.0
         self._rebuild_homography(persist_normalized=True)
@@ -468,21 +470,23 @@ class BallVision:
             old_corners = self.corners
             self.corners = normalized
             self.config["platform"]["corners_px"] = [list(point) for point in normalized]
-            self.zero_reference = None
-            self.config.setdefault("control", {}).pop("zero_reference_mm", None)
-            self.corner_success_message = "Platform corners saved as TL/TR/BR/BL; zero reference cleared."
-            print(
-                "Stored platform corners saved as TL/TR/BR/BL; "
-                "zero reference was cleared. 請把球放中心後按 D."
-            )
+            self.zero_reference = np.array([0.0, 0.0], dtype=np.float32)
+            control_config = self.config.setdefault("control", {})
+            control_config.pop("zero_reference_pct", None)
+            control_config.pop("zero_reference_mm", None)
+            self.corner_success_message = "Platform corners saved as TL/TR/BR/BL; its calculated centre is zero."
+            print("Stored platform corners saved as TL/TR/BR/BL; its calculated centre is now X=0, Y=0.")
             print(f"Old order: {old_corners}")
             print(f"New order: {self.corners}")
             if persist_normalized:
                 save_config(self.config_path, self.config)
-        width = float(self.config["platform"]["width_mm"])
-        height = float(self.config["platform"]["height_mm"])
         source = np.float32(self.corners)
-        destination = np.float32([[0, 0], [width, 0], [width, height], [0, height]])
+        destination = np.float32([
+            [0, 0],
+            [PLATFORM_FULL_SPAN_PCT, 0],
+            [PLATFORM_FULL_SPAN_PCT, PLATFORM_FULL_SPAN_PCT],
+            [0, PLATFORM_FULL_SPAN_PCT],
+        ])
         self.homography = cv2.getPerspectiveTransform(source, destination)
 
     def _has_ball_hsv(self) -> bool:
@@ -492,14 +496,10 @@ class BallVision:
     def _has_platform(self) -> bool:
         return len(self.corners) == 4 and self.homography is not None and self.corner_order_message is None
 
-    def _has_zero(self) -> bool:
-        return self.zero_reference is not None
-
     def _ready_items(self) -> dict[str, bool]:
         return {
             "B ball HSV": self._has_ball_hsv(),
-            "C platform border": self._has_platform(),
-            "D zero point": self._has_zero(),
+            "C platform border (centre = zero)": self._has_platform(),
         }
 
     def _ready_complete(self) -> bool:
@@ -511,17 +511,15 @@ class BallVision:
         if self.mode == "corners":
             next_index = min(len(self.pending_corners) + 1, 4)
             return f"C: click platform corner {next_index}/4 in order TL -> TR -> BR -> BL."
-        if self.mode == "zero":
-            return "D: click the place where the ball should rest at X=0 Y=0."
         if self.corner_order_message is not None:
             return self.corner_order_message
         if self._ready_complete():
-            return "READY complete. Press R to start RUN; P stays READY; B/C/D recalibrate."
+            return "READY complete. Press R to start RUN; P stays READY; B/C recalibrate."
         if not self._has_ball_hsv():
             return "Next: press B, then click the ball centre for HSV."
         if not self._has_platform():
             return "Next: press C, then click four platform corners in order TL -> TR -> BR -> BL."
-        return "Next: press D, then click the desired balance zero point."
+        return "Platform centre is calculated automatically after C."
 
     def _print_ready_checklist(self) -> None:
         states = " | ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in self._ready_items().items())
@@ -556,12 +554,7 @@ class BallVision:
         self.config = load_config(self.config_path)
         self.corners = [tuple(point) for point in self.config["platform"].get("corners_px", [])]
         self.pending_corners = []
-        stored_reference = self.config.get("control", {}).get("zero_reference_mm")
-        self.zero_reference = (
-            np.array(stored_reference, dtype=np.float32)
-            if isinstance(stored_reference, list) and len(stored_reference) == 2
-            else None
-        )
+        self.zero_reference = np.array([0.0, 0.0], dtype=np.float32)
         self.filtered_position = None
         self.mode = "normal"
         self._rebuild_homography(persist_normalized=True)
@@ -572,28 +565,48 @@ class BallVision:
         if self.homography is None:
             return None
         mapped = cv2.perspectiveTransform(np.float32([[point]]), self.homography)[0][0]
-        width = float(self.config["platform"]["width_mm"])
-        height = float(self.config["platform"]["height_mm"])
-        return float(mapped[0] - width / 2.0), float(height / 2.0 - mapped[1])
+        return (
+            float(mapped[0] - PLATFORM_HALF_SPAN_PCT),
+            float(PLATFORM_HALF_SPAN_PCT - mapped[1]),
+        )
+
+    def _zero_reference_is_inside_platform(self, position: np.ndarray | tuple[float, float] | None) -> bool:
+        if position is None:
+            return False
+        try:
+            zero_x = float(position[0])
+            zero_y = float(position[1])
+        except (TypeError, ValueError, IndexError):
+            return False
+        return (
+            math.isfinite(zero_x)
+            and math.isfinite(zero_y)
+            and -PLATFORM_HALF_SPAN_PCT < zero_x < PLATFORM_HALF_SPAN_PCT
+            and -PLATFORM_HALF_SPAN_PCT < zero_y < PLATFORM_HALF_SPAN_PCT
+        )
+
+    def _position_is_inside_platform(self, position: tuple[float, float] | None) -> bool:
+        if position is None:
+            return False
+        x, y = position
+        return (
+            math.isfinite(x)
+            and math.isfinite(y)
+            and -PLATFORM_HALF_SPAN_PCT <= x <= PLATFORM_HALF_SPAN_PCT
+            and -PLATFORM_HALF_SPAN_PCT <= y <= PLATFORM_HALF_SPAN_PCT
+        )
 
     def _platform_geometry(self) -> PlatformGeometry | None:
-        if self.zero_reference is None:
+        if not self._zero_reference_is_inside_platform(self.zero_reference):
             return None
-        width = float(self.config["platform"]["width_mm"])
-        height = float(self.config["platform"]["height_mm"])
         zero_x = float(self.zero_reference[0])
         zero_y = float(self.zero_reference[1])
         geometry = PlatformGeometry(
-            x_min_mm=-width / 2.0 - zero_x,
-            x_max_mm=width / 2.0 - zero_x,
-            y_min_mm=-height / 2.0 - zero_y,
-            y_max_mm=height / 2.0 - zero_y,
+            x_min_pct=-PLATFORM_HALF_SPAN_PCT - zero_x,
+            x_max_pct=PLATFORM_HALF_SPAN_PCT - zero_x,
+            y_min_pct=-PLATFORM_HALF_SPAN_PCT - zero_y,
+            y_max_pct=PLATFORM_HALF_SPAN_PCT - zero_y,
         )
-        values = (geometry.x_min_mm, geometry.x_max_mm, geometry.y_min_mm, geometry.y_max_mm)
-        if not all(math.isfinite(value) for value in values):
-            return None
-        if not (geometry.x_min_mm < 0.0 < geometry.x_max_mm and geometry.y_min_mm < 0.0 < geometry.y_max_mm):
-            return None
         return geometry
 
     def _send_geometry_config(self) -> bool:
@@ -606,8 +619,8 @@ class BallVision:
             return False
         print(
             "Sent calibrated platform geometry to Nano: "
-            f"X[{geometry.x_min_mm:+.1f},{geometry.x_max_mm:+.1f}] mm, "
-            f"Y[{geometry.y_min_mm:+.1f},{geometry.y_max_mm:+.1f}] mm."
+            f"X[{geometry.x_min_pct:+.1f},{geometry.x_max_pct:+.1f}]%, "
+            f"Y[{geometry.y_min_pct:+.1f},{geometry.y_max_pct:+.1f}]%."
         )
         return True
 
@@ -650,6 +663,26 @@ class BallVision:
             return None
         _, center, radius = max(candidates, key=lambda item: item[0])
         return center, radius
+
+    def _ball_contact_point(self, center: tuple[float, float], radius: float) -> tuple[float, float]:
+        """Estimate the ball's platform contact point from its visible circle.
+
+        The homography is calibrated on the platform plane, not at the ball's
+        elevated visual centre. Move the detection toward the platform's near
+        edge by a bounded fraction of the detected radius before mapping it.
+        """
+        if len(self.corners) != 4:
+            return center
+        far_mid = np.mean(np.float32(self.corners[:2]), axis=0)
+        near_mid = np.mean(np.float32(self.corners[2:]), axis=0)
+        direction = near_mid - far_mid
+        length = float(np.linalg.norm(direction))
+        if not math.isfinite(length) or length <= 1e-6:
+            return center
+        configured = float(self.config.get("detection", {}).get("contact_offset_radius", 0.85))
+        offset_ratio = min(1.0, max(0.0, configured))
+        offset = direction / length * (max(0.0, float(radius)) * offset_ratio)
+        return float(center[0] + offset[0]), float(center[1] + offset[1])
 
     def _send_position_command(self, position: tuple[float, float]) -> bool:
         timestamp_ms = int(time.monotonic() * 1000)
@@ -839,8 +872,11 @@ class BallVision:
                 cv2.putText(overlay, "ORDER: TL -> TR -> BR -> BL", (10, overlay.shape[0] - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         if ball:
             center, radius = ball
+            contact = self._ball_contact_point(center, radius)
             cv2.circle(overlay, (round(center[0]), round(center[1])), round(radius), (0, 255, 0), 2)
             cv2.circle(overlay, (round(center[0]), round(center[1])), 3, (0, 0, 255), -1)
+            cv2.circle(overlay, (round(contact[0]), round(contact[1])), 4, (0, 165, 255), -1)
+            cv2.putText(overlay, "CONTACT", (round(contact[0]) + 6, round(contact[1]) + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
 
         if self.pid_running:
             run_state = "RUN"
@@ -852,7 +888,7 @@ class BallVision:
         items = self._ready_items()
         checklist = "  ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in items.items())
         if self.pid_running:
-            position_text = "BALL: LOST" if position is None else f"BALL: X={position[0]:+.1f} mm  Y={position[1]:+.1f} mm"
+            position_text = "BALL: LOST" if position is None else f"BALL: X={position[0]:+.1f}%  Y={position[1]:+.1f}%"
         else:
             position_text = "READY: P=hold READY; no POS/LOST/servo commands are sent"
         lines = [
@@ -915,35 +951,21 @@ class BallVision:
                 self.config["platform"]["corners_px"] = [list(point) for point in normalized]
                 self._rebuild_homography()
                 self.filtered_position = None
-                self.zero_reference = None
-                self.config.setdefault("control", {}).pop("zero_reference_mm", None)
-                self.corner_success_message = "C platform corners saved as TL/TR/BR/BL."
+                self.zero_reference = np.array([0.0, 0.0], dtype=np.float32)
+                control_config = self.config.setdefault("control", {})
+                control_config.pop("zero_reference_pct", None)
+                control_config.pop("zero_reference_mm", None)
+                self.corner_success_message = "C platform corners saved as TL/TR/BR/BL; its calculated centre is zero."
                 self.mode = "normal"
                 print(f"C saved platform border TL/TR/BR/BL: {self.corners}")
-                print("C saved platform border. 請把球放中心後按 D. Cannot RUN until D is set again.")
+                print("C saved platform border. The calculated platform centre is zero; R can start RUN when the ball is detected.")
                 self._save_and_report_ready()
             else:
                 next_label = self.corner_labels[len(self.pending_corners)]
                 print(f"C next: click {next_label} corner ({len(self.pending_corners) + 1}/4).")
             return
 
-        if self.mode == "zero":
-            position = self._platform_position(click_point)
-            if position is None:
-                print("D needs platform border first: press C and click all four corners.")
-                return
-            self.zero_reference = np.array(position, dtype=np.float32)
-            self.config.setdefault("control", {})["zero_reference_mm"] = [
-                round(float(position[0]), 2),
-                round(float(position[1]), 2),
-            ]
-            self.filtered_position = None
-            self.mode = "normal"
-            print(f"D saved zero point: raw platform X={position[0]:+.1f}, Y={position[1]:+.1f} mm becomes X=0, Y=0.")
-            self._save_and_report_ready()
-            return
-
-        print("READY: press B for HSV, C for platform border, D for zero point, or R to RUN when complete.")
+        print("READY: press B for HSV, C for platform border (its centre becomes zero), or R to RUN when complete.")
 
     def handle_key(self, key: int) -> bool:
         if key in (ord("q"), 27):
@@ -965,13 +987,6 @@ class BallVision:
             self.mode = "corners"
             print("C: 依序點四角：TL -> TR -> BR -> BL（左上、右上、右下、左下）。")
             print("C click progress will show 1/4..4/4. Old valid platform settings stay active unless the new four corners pass validation.")
-        elif key == ord("d"):
-            self._safe_ready("D selected. Back to READY; no live position or servo commands are being sent.")
-            if self.homography is None:
-                print("D needs platform border first: press C and click all four corners.")
-            else:
-                self.mode = "zero"
-                print("D: click the place where the ball should rest. That point becomes X=0, Y=0.")
         elif key in (ord("p"), ord("P")):
             self._safe_ready("P pressed. Back to READY; sent READY and stopped live POS/LOST/servo control.")
         elif key in (ord("r"), ord("R")):
@@ -987,7 +1002,14 @@ class BallVision:
                 print("Cannot RUN: READY checklist is incomplete.")
                 self._print_ready_checklist()
             elif self.latest_position is None:
-                print("Cannot RUN: ball is not detected yet. Keep it visible, then press R again.")
+                if self.last_outside_platform_position is not None:
+                    x, y = self.last_outside_platform_position
+                    print(
+                        "Cannot RUN: HSV candidate is outside the calibrated platform "
+                        f"(X={x:+.1f}%, Y={y:+.1f}%). Recheck B ball HSV or place the ball inside the C border."
+                    )
+                else:
+                    print("Cannot RUN: ball is not detected yet. Keep it visible, then press R again.")
             else:
                 self._request_run(self.latest_position)
         return True
@@ -1002,7 +1024,7 @@ class BallVision:
         if not self.headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
             cv2.setMouseCallback(WINDOW_NAME, self._mouse_callback)
-            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL->TR->BR->BL, D=zero point, R=RUN, P=READY/pause, Q=quit.")
+            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL->TR->BR->BL (calculated centre is zero), R=RUN, P=READY/pause, Q=quit.")
             self._print_ready_checklist()
 
         frame_count = 0
@@ -1017,18 +1039,23 @@ class BallVision:
                 self.last_frame_at = now
                 self.latest_frame = frame
                 ball = self._detect_ball(frame)
-                position = self._platform_position(ball[0]) if ball else None
+                contact_point = self._ball_contact_point(*ball) if ball else None
+                position = self._platform_position(contact_point) if contact_point else None
                 if position is not None and self.zero_reference is not None:
                     position = (
                         position[0] - float(self.zero_reference[0]),
                         position[1] - float(self.zero_reference[1]),
                     )
-                if position is not None:
+                if not self._position_is_inside_platform(position):
+                    self.last_outside_platform_position = position
+                    position = None
+                else:
+                    self.last_outside_platform_position = None
                     sample = np.array(position, dtype=np.float32)
                     alpha = float(self.config["detection"]["filter_alpha"])
                     self.filtered_position = sample if self.filtered_position is None else alpha * sample + (1 - alpha) * self.filtered_position
                     position = (float(self.filtered_position[0]), float(self.filtered_position[1]))
-                else:
+                if position is None:
                     self.filtered_position = None
                 self.latest_position = position
                 self._send_position(position)

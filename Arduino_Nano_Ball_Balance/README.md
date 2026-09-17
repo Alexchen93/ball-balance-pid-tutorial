@@ -36,14 +36,14 @@ READY
 TARGET,0.0,0.0
 ```
 
-Nano 每秒回傳 10 筆 `TEL,...` 資料，包含目前座標、normalized error 百分比、normalized output 百分比、要求平台傾角、Servo 角度與連線／球遺失狀態。格式為：
+Nano 每秒回傳 10 筆 `TEL,...` 資料，包含目前百分比座標、normalized error 百分比、normalized output 百分比、要求平台傾角、Servo 角度與連線／球遺失狀態。格式為：
 
 ```text
-TEL,state,link,x_mm,y_mm,e_x_pct,e_y_pct,u_x_pct,u_y_pct,tilt_x_deg,tilt_y_deg,servo_x,servo_y,age_ms
+TEL,state,link,x_pct,y_pct,e_x_pct,e_y_pct,u_x_pct,u_y_pct,tilt_x_deg,tilt_y_deg,servo_x,servo_y,age_ms
 ```
 
-Nano 韌體是唯一 PID 參數來源與控制權威；Camera Vision 不會保存、下發或覆寫 PID。Camera Vision 只會在 RUN 前依目前 `C` 四角 homography 與 `D` 零點送一次 `GEOM,x_min,x_max,y_min,y_max`，Nano 驗證零點落在四邊內後回 `GEOM,OK`。若 Nano 回 `ERROR,BAD_GEOM` / `ERROR,GEOM_REQUIRED`，或舊韌體回 `ERROR,UNKNOWN_COMMAND`，Camera Vision 會留在 READY；沒有使用舊 ±260/±200 的 fallback。
+Nano 韌體是唯一 PID 參數來源與控制權威；Camera Vision 不會保存、下發或覆寫 PID。Camera Vision 只會在 RUN 前依目前 `C` 四角 homography 與 `D` 零點送一次 `GEOM,x_min_pct,x_max_pct,y_min_pct,y_max_pct`，Nano 驗證零點落在四邊內後回 `GEOM,OK`。若 Nano 回 `ERROR,BAD_GEOM` / `ERROR,GEOM_REQUIRED`，或舊韌體回 `ERROR,UNKNOWN_COMMAND`，Camera Vision 會留在 READY；沒有使用舊 ±260/±200 的 fallback。
 成功接受合法 `POS` 時，正式韌體會立即回 `POS,OK`。Camera Vision 的 RUN handshake 是 `GEOM -> GEOM,OK -> fresh POS -> POS,OK -> final fresh POS + RUN -> STATE,RUN`，之後才開始連續傳送座標。
-正式 `.ino` 以 Camera 傳入的校正邊界正規化座標誤差。對每軸：`error_mm = target_mm - ball_mm`；若 `error_mm >= 0`，分母為 `target_mm - min_mm`；若 `error_mm < 0`，分母為 `max_mm - target_mm`；`e_norm = clamp(error_mm / denominator, -1, +1)`。因此零點偏離中心時，近邊與遠邊會各自映射到該方向的 full-scale error，而不是共用對稱分母。
+正式 `.ino` 以 Camera 傳入的校正邊界正規化座標誤差。對每軸：`error_pct = target_pct - ball_pct`；若 `error_pct >= 0`，分母為 `target_pct - min_pct`；若 `error_pct < 0`，分母為 `max_pct - target_pct`；`e_norm = clamp(error_pct / denominator, -1, +1)`。因此零點偏離中心時，近邊與遠邊會各自映射到該方向的 full-scale error，而不是共用對稱分母。
 PID 仍在 Nano 內以 `u_norm = Kp*e_norm + Ki*integral(e_norm*dt) + Kd*derivative(e_norm)` 計算並 clamp 到 `[-1,+1]`；`tilt_deg = u_norm * 20`，再依 `SERVO_*_DIRECTION` 寫到各軸中心 ±20° 的校正安全端點。P-only 常數為 X/Y `Kp=1.00`、`Ki=0.00`、`Kd=0.00`。
 若要讓任何 PID、方向或安全端點變更生效，必須修改並重新燒錄 `.ino`。舊 `PIDX`/`PIDY` 命令會被明確拒絕並回 `ERROR,PID_MANAGED_BY_NANO`。

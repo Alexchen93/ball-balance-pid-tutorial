@@ -39,7 +39,7 @@ def make_vision():
     vision.run_start_events_seen = 0
     vision.run_start_last_event = None
     vision.latest_position = (12.34, -5.67)
-    vision.config = {"platform": {"width_mm": 520.0, "height_mm": 400.0}}
+    vision.config = {"platform": {}}
     vision.zero_reference = np.array([30.0, -20.0], dtype=np.float32)
     vision.filtered_position = None
     vision.last_sent_at = 0.0
@@ -53,7 +53,7 @@ class RunHandshakeTest(unittest.TestCase):
 
         vision._request_run((12.34, -5.67))
         self.assertEqual(transport.discard_count, 1)
-        self.assertEqual(transport.sent, ["GEOM,-290.00,230.00,-180.00,220.00"])
+        self.assertEqual(transport.sent, ["GEOM,-130.00,70.00,-80.00,120.00"])
         self.assertEqual(vision.run_start_phase, "wait_geom_ack")
 
         transport.events = ["GEOM,OK"]
@@ -82,7 +82,7 @@ class RunHandshakeTest(unittest.TestCase):
         transport.events = ["ERROR,UNKNOWN_COMMAND"]
         vision._handle_nano_events()
 
-        self.assertEqual(transport.sent, ["GEOM,-290.00,230.00,-180.00,220.00", "READY"])
+        self.assertEqual(transport.sent, ["GEOM,-130.00,70.00,-80.00,120.00", "READY"])
         self.assertIsNone(vision.run_start_phase)
         self.assertFalse(vision.pid_running)
 
