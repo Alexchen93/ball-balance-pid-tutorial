@@ -33,6 +33,8 @@ cd ~/文件/平衡球PID教案/Camera_Vision
 ./start_camera_vision.sh
 ```
 
+啟動後第一步會顯示攝影機**編號選單**。啟動器會先測試並只列出實際能讀取影像的節點，避免選到 USB 攝影機的中繼資料節點。直接選擇內建或外接 USB 鏡頭的編號即可；不需要輸入 `/dev/video*` 路徑、鏡頭 index 或其他攝影機參數。其後的 READY／RUN、HSV 與平台校正操作均與原本相同。
+
 啟動選單：
 
 | 選項 | 用途 |
@@ -80,6 +82,7 @@ cd ~/文件/平衡球PID教案/Camera_Vision
 | `p` | 回 READY；停止 live `POS` / `LOST` / Servo 控制。 |
 | `r` | Nano 已連線、球可辨識、B/C 完成時進 RUN；RUN 中再按一次回 READY。 |
 | `q` / `Esc` | 安全停止並離開。 |
+| `Ctrl+C`、停止 `.sh` 程序或 `SIGTERM` | 安全關閉影像視窗、釋放攝影機，並送 Nano 回 `READY`。 |
 
 > 沒有 `D` 操作。C 成功後，平台中心自動是 `(0,0)`。
 

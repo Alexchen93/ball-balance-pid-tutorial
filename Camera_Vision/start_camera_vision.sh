@@ -20,6 +20,93 @@ done
 cd "$script_dir"
 run() { exec "$python_bin" ball_vision.py "$@"; }
 
+camera_display_name() {
+  local device="$1" name detail
+  name=$(basename "$device")
+  detail=$(python3 - "$name" <<'PY'
+import sys
+from pathlib import Path
+name = sys.argv[1]
+node = Path("/sys/class/video4linux") / name / "device"
+try:
+    node = node.resolve()
+except OSError:
+    pass
+parts = []
+for parent in [node, *list(node.parents)[:7]]:
+    for field in ("manufacturer", "product", "idVendor", "idProduct"):
+        try:
+            value = (parent / field).read_text(errors="ignore").strip()
+        except OSError:
+            value = ""
+        if value and value not in parts:
+            parts.append(value)
+print(" ".join(parts) or "unknown camera")
+PY
+)
+  printf '%s' "$detail"
+}
+
+camera_can_read_frame() {
+  local device="$1"
+  "$python_bin" - "$device" >/dev/null 2>&1 <<'PY'
+import cv2
+import sys
+
+capture = cv2.VideoCapture(sys.argv[1], cv2.CAP_V4L2)
+try:
+    ok, frame = capture.read()
+    raise SystemExit(0 if ok and frame is not None and frame.size else 1)
+finally:
+    capture.release()
+PY
+}
+
+choose_camera_index() {
+  local cameras=() unavailable=() device choice index
+  local all_cameras=()
+  shopt -s nullglob
+  all_cameras=(/dev/video*)
+  shopt -u nullglob
+  if [[ ${#all_cameras[@]} -eq 0 ]]; then
+    echo "找不到攝影機。請確認內建或 USB 攝影機已連接。" >&2
+    return 1
+  fi
+  # One UVC camera can expose both a real capture stream and a metadata-only
+  # /dev/video node. Probe once so students cannot select the metadata node.
+  for device in "${all_cameras[@]}"; do
+    if camera_can_read_frame "$device"; then
+      cameras+=("$device")
+    else
+      unavailable+=("$device")
+    fi
+  done
+  if [[ ${#cameras[@]} -eq 0 ]]; then
+    echo "偵測到攝影機裝置，但沒有任何一個能讀取影像。請關閉其他使用鏡頭的程式，重新插拔 USB 鏡頭後再試。" >&2
+    [[ ${#unavailable[@]} -gt 0 ]] && printf '無法讀取：%s\n' "${unavailable[*]}" >&2
+    return 1
+  fi
+  echo
+  echo "=== 選擇攝影機 ==="
+  echo "僅列出已確認能讀取影像的鏡頭；已略過中繼資料或無法讀取的 /dev/video 節點。"
+  echo "請選擇學生要使用的鏡頭；外接 USB 俯拍鏡頭通常會在插入後出現新的項目。"
+  for index in "${!cameras[@]}"; do
+    device=${cameras[$index]}
+    printf '%d) %s — %s\n' "$((index + 1))" "$device" "$(camera_display_name "$device")"
+  done
+  while true; do
+    read -r -p "請輸入攝影機編號 [1-${#cameras[@]}]，或 q 離開：" choice
+    [[ "$choice" =~ ^[Qq]$ ]] && return 2
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#cameras[@]} )); then
+      device=${cameras[$((choice - 1))]}
+      [[ $(basename "$device") =~ ^video([0-9]+)$ ]] || { echo "無效的攝影機裝置：$device" >&2; continue; }
+      CAMERA_INDEX="${BASH_REMATCH[1]}"
+      return 0
+    fi
+    echo "請輸入清單中的編號。"
+  done
+}
+
 port_is_busy() {
   local port="$1" busy_port
   for busy_port in ${CAMERA_VISION_BUSY_PORTS:-}; do
@@ -143,6 +230,18 @@ if [[ -n "$manual_port" ]]; then
   echo "手動選擇 Nano：$manual_port"
   run_with_serial_port "$manual_port"
 fi
+
+# Always ask first: students choose a camera by number, never by device path.
+CAMERA_INDEX=""
+if choose_camera_index; then
+  camera_index="$CAMERA_INDEX"
+else
+  status=$?
+  [[ $status -eq 2 ]] && exit 0
+  exit "$status"
+fi
+args+=(--camera-index "$camera_index")
+echo "已選擇攝影機 index $camera_index。"
 
 while true; do
   cat <<'GUIDE'

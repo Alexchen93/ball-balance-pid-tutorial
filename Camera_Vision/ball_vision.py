@@ -10,6 +10,7 @@ import glob
 import json
 import math
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -1086,7 +1087,18 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _request_graceful_shutdown(signal_number: int, _frame: Any) -> None:
+    """Turn shell Ctrl+C/SIGTERM into Python unwinding so run() releases the camera."""
+    signal_name = signal.Signals(signal_number).name
+    print(f"Received {signal_name}: closing camera window and returning Nano to READY.")
+    raise KeyboardInterrupt
+
+
 def main() -> int:
+    # start_camera_vision.sh uses exec, so stopping that shell targets this
+    # process directly. Handle both terminal Ctrl+C and ordinary SIGTERM.
+    signal.signal(signal.SIGINT, _request_graceful_shutdown)
+    signal.signal(signal.SIGTERM, _request_graceful_shutdown)
     arguments = parse_arguments()
     config = load_config(arguments.config)
     camera_settings = config["camera"]
@@ -1100,6 +1112,9 @@ def main() -> int:
             int(camera_settings["requested_fps"]),
             arguments.max_frames,
         )
+        return 0
+    except KeyboardInterrupt:
+        print("Camera Vision stopped safely.")
         return 0
     except RuntimeError as error:
         print(f"ERROR: {error}", file=sys.stderr)

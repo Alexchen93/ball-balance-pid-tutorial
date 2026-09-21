@@ -29,3 +29,23 @@ Nano 已正確回覆 `GEOM,OK`，但 Python 的 `NanoTransport.poll()` 只把 `E
 - 需要重新啟動 Camera Vision，使用已燒錄目前 `Arduino_Nano_Ball_Balance.ino` 的 Nano 做一次受控 RUN 測試。
 - 測試前關閉 Arduino Serial Monitor，使用 A 套用已存設定，確認球置於中心；按 R 後預期會看到 `GEOM,OK`、`POS,OK`、`STATE,RUN` 與 `RUN confirmed`。
 - 若位置、相機或機構調整，重新執行 C（TL → TR → BR → BL）與 D（零點）後再 RUN。
+
+## 2026-09-21 鏡頭選擇與安全關閉
+
+### 調整
+
+- `Camera_Vision/start_camera_vision.sh` 在既有 Nano 啟動選單前加入攝影機編號選擇；學生不需輸入 `/dev/video*` 路徑或 index。
+- 啟動器會先以 OpenCV 讀取一張畫面，只列出可實際擷取影像的節點，略過同一支 UVC 攝影機可能出現的 metadata-only `/dev/video*` 節點。
+- 原本 `Camera_Vision/ball_vision.py` 的 HSV 偵測、校正、READY/RUN、Nano 通訊與 PID 分工未改變；只加入 SIGINT/SIGTERM 的收尾處理。
+- 按 `q`／`Esc`、`Ctrl+C` 或正常停止 `start_camera_vision.sh` 時，程式會關閉 OpenCV 視窗、釋放攝影機並送 Nano 回 `READY`。`kill -9` 無法進行收尾。
+
+### 2026-09-21 驗證
+
+- `python3 -m py_compile Camera_Vision/ball_vision.py`
+- `bash -n Camera_Vision/start_camera_vision.sh`
+- 以實際內建鏡頭執行 headless 程式後送出 `SIGTERM`：已確認正常結束且 `/dev/video0` 未殘留占用。
+- 在 `Camera_Vision/.venv` 執行 27 個 Python 單元測試與 3 個啟動器／韌體靜態測試，全部通過。
+
+### 實機狀態
+
+- Desktop 的 Logitech C922 曾被偵測到，但在本次最後檢查前已從 USB 斷線；重新接上後，僅在可讀取影像時才會出現在選單中。
