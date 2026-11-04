@@ -44,8 +44,8 @@ constexpr uint16_t JOYSTICK_DEBOUNCE_MS = 30;
 
 // ===== 學生校正參數（校正完成後只修改本區） =====
 // Mechanical calibration: set these before enabling RUN on the real platform.
-constexpr int SERVO_X_CENTER = 71;
-constexpr int SERVO_Y_CENTER = 76;
+constexpr int SERVO_X_CENTER = 77;
+constexpr int SERVO_Y_CENTER = 87;
 // X 中心左右可移動的安全範圍。目前端點是 X中心90 ±20，推導為 70～110 度；
 // 調整 OFFSET 即可改安全行程，不需要手算端點。
 // 若未來 X/Y 中心分開，須確認共用範圍仍適用，避免暗中改變 PID 行為。
@@ -405,27 +405,45 @@ void updateJoystickButton() {
 }
 
 void printTestStatus() {
-  Serial.print(F("TESTSTAT,X="));
-  Serial.print(servoAngleX);
-  Serial.print(F(",Y="));
-  Serial.print(servoAngleY);
-  Serial.print(F(",CX="));
-  Serial.print(testCenterX);
-  Serial.print(F(",CY="));
-  Serial.print(testCenterY);
-  Serial.print(F(",MODE="));
+  // Keep one complete TEST status update to exactly three easy-to-read lines:
+  // mode first, then X-axis, then Y-axis.
+  Serial.print(F("MODE,NAME="));
   Serial.print(testMoveModeName(testMoveMode));
-  Serial.print(F(",STEP="));
+  Serial.print(F(",ACTION="));
   if (testMoveMode == TEST_ENDPOINT) Serial.print(F("ENDPOINT"));
-  else Serial.print(TEST_MICRO_STEP_DEG);
-  Serial.print(F(",MIN="));
-  Serial.print(SERVO_MIN_ANGLE);
-  Serial.print(F(",MAX="));
-  Serial.print(SERVO_MAX_ANGLE);
-  Serial.print(F(",OFFSET="));
-  Serial.print(SERVO_LIMIT_OFFSET_DEG);
-  Serial.print(F(",ARM="));
+  else {
+    Serial.print(F("MICRO_STEP_"));
+    Serial.print(TEST_MICRO_STEP_DEG);
+    Serial.print(F("DEG"));
+  }
+  Serial.print(F(",ARMED="));
   Serial.println(joystickMoveArmed ? 1 : 0);
+
+  Serial.print(F("X,ANGLE="));
+  Serial.print(servoAngleX);
+  Serial.print(F(",CENTER="));
+  Serial.print(testCenterX);
+  Serial.print(F(",LIMIT="));
+  Serial.print(SERVO_MIN_ANGLE);
+  Serial.print('-');
+  Serial.print(SERVO_MAX_ANGLE);
+  Serial.print(F(",PIN="));
+  Serial.print(SERVO_X_PIN);
+  Serial.print(F(",DIRECTION="));
+  Serial.println(SERVO_X_DIRECTION);
+
+  Serial.print(F("Y,ANGLE="));
+  Serial.print(servoAngleY);
+  Serial.print(F(",CENTER="));
+  Serial.print(testCenterY);
+  Serial.print(F(",LIMIT="));
+  Serial.print(SERVO_MIN_ANGLE);
+  Serial.print('-');
+  Serial.print(SERVO_MAX_ANGLE);
+  Serial.print(F(",PIN="));
+  Serial.print(SERVO_Y_PIN);
+  Serial.print(F(",DIRECTION="));
+  Serial.println(SERVO_Y_DIRECTION);
 }
 
 void printTestCalibration() {
