@@ -76,25 +76,29 @@ TEL,state,link,x_pct,y_pct,e_x_pct,e_y_pct,u_x_pct,u_y_pct,tilt_x_deg,tilt_y_deg
 ```cpp
 DEFAULT_KP_X = 1.25f;
 DEFAULT_KI_X = 0.00f;
-DEFAULT_KD_X = 0.12f;
+DEFAULT_KD_X = 0.50f;
 DEFAULT_KP_Y = 1.25f;
 DEFAULT_KI_Y = 0.00f;
-DEFAULT_KD_Y = 0.12f;
+DEFAULT_KD_Y = 0.50f;
 ```
 
-公式：
+以上為目前程式中的設定，並非已經完成實機調整或適用所有平台的最佳值。I 的運算已有實作，但 Ki 為 0，所以目前是 PD；每組完成校正與測試後才決定是否調整。
+
+目前機構參數為 X 中心 77°、Y 中心 87°、兩軸安全行程各 ±20°、X 方向為 −1、Y 方向為 −1。中心與安全端點必須依各組的實際校正結果確認，不能直接視為水平或安全。
+
+公式（誤差先依平台範圍正規化，時間以秒計）：
 
 ```text
 error = target - ball
 u = Kp × error + Ki × integral(error) + Kd × derivative(error)
-tilt = clamp(u, -1, +1) × 20°
+servo_offset = clamp(u, -1, +1) × SERVO_LIMIT_OFFSET_DEG
 ```
 
 - `Kp` 提高可讓球還未到邊緣時更早回拉。
 - `Kd` 在球快速外移時提供提早煞車；過大會放大影像雜訊、造成抖動。
 - `Ki` 現在為 0，因為它無法煞住移動中的球，且容易造成過衝。
 
-若高頻抖動，先將 `Kd` 從 `0.12` 降到 `0.08`；若回拉太慢且沒有明顯抖動，再小幅提高 `Kp`。每次只改一組小幅數值、重新燒錄並記錄結果。不要把 Servo 安全端點當成 PID 調參工具。
+`servo_offset` 是 Servo 命令角度相對中心的偏移，不等於實際平台傾角。若高頻抖動，先停止並檢查辨識穩定性與機構，再考慮小幅降低 `Kd`；若回拉太慢且沒有明顯抖動，可考慮小幅提高 `Kp`。每次只改一個參數、重新燒錄並記錄結果。不要把 Servo 安全端點當成 PID 調參工具。
 
 ## Camera Vision 的責任邊界
 

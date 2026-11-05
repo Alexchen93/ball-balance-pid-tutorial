@@ -10,8 +10,8 @@
  * Nano telemetry (10 Hz):
  *   TEL,<state>,<link>,<x>,<y>,<error_x>,<error_y>,<u_x>,<u_y>,<servo_x>,<servo_y>,<age_ms>
  *
- * Hardware TEST extension: 5-pin analog joystick on A0/A1/D2.
- * Hold joystick SW for 1.5 s in WAIT/READY to enter TEST without a PC.
+ * Hardware TEST extension: 5-pin analog joystick on A0/A1/D7.
+ * The current sketch enters TEST automatically on boot.
  * In TEST, each joystick deflection triggers exactly ONE movement. The stick
  * must return to center before another movement is accepted. Short-press SW
  * toggles MODE 1 = MICRO STEP (1 degree) and MODE 2 = ENDPOINT. In ENDPOINT
@@ -34,7 +34,7 @@ constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
 // 5-pin analog joystick module (KY-023 / PS2-style): GND, +5V, VRx, VRy, SW.
 constexpr uint8_t JOYSTICK_X_PIN = A0;
 constexpr uint8_t JOYSTICK_Y_PIN = A1;
-constexpr uint8_t JOYSTICK_SW_PIN = 2;
+constexpr uint8_t JOYSTICK_SW_PIN = 7;
 constexpr int JOYSTICK_X_DIRECTION = 1;
 constexpr int JOYSTICK_Y_DIRECTION = 1;
 constexpr int JOYSTICK_DEADZONE = 100;
@@ -46,15 +46,16 @@ constexpr uint16_t JOYSTICK_DEBOUNCE_MS = 30;
 // Mechanical calibration: set these before enabling RUN on the real platform.
 constexpr int SERVO_X_CENTER = 77;
 constexpr int SERVO_Y_CENTER = 87;
-// X 中心左右可移動的安全範圍。目前端點是 X中心90 ±20，推導為 70～110 度；
-// 調整 OFFSET 即可改安全行程，不需要手算端點。
-// 若未來 X/Y 中心分開，須確認共用範圍仍適用，避免暗中改變 PID 行為。
+// 本校正程式共用以 X 中心計算的上下限；兩軸都使用此共用範圍。
+// 各軸機構安全範圍必須實測，此設定不保證適合 Y 軸。
 constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
 constexpr int SERVO_MIN_ANGLE = SERVO_X_CENTER - SERVO_LIMIT_OFFSET_DEG;
 constexpr int SERVO_MAX_ANGLE = SERVO_X_CENTER + SERVO_LIMIT_OFFSET_DEG;
 // ===== 學生校正參數結束 =====
-constexpr int SERVO_X_DIRECTION = 1;  // Change to -1 if the X correction is reversed.
-constexpr int SERVO_Y_DIRECTION = 1;  // Change to -1 if the Y correction is reversed.
+// 這兩個值只屬於本校正韌體的舊控制路徑，不會修改正式 PID 韌體。
+// 正式程式的方向請依 DIR 測試中實際觀察的升降判斷並手動轉填。
+constexpr int SERVO_X_DIRECTION = -1;
+constexpr int SERVO_Y_DIRECTION = -1;
 
 constexpr float POSITION_LIMIT_MM = 150.0f;
 constexpr float PID_OUTPUT_LIMIT_DEG = 8.0f;
@@ -146,6 +147,14 @@ int joystickRawX = 512;
 int joystickRawY = 512;
 uint32_t lastJoystickMoveMs = 0;
 bool joystickMoveArmed = true;
+// Only the current three-line status owns these transient movement fields.
+uint8_t statusMoveSource = 0;  // 0=none, 1=joystick, 2=serial command
+int8_t statusChangeX = -2;      // -2=not moved, -1=decrease, 0=limit, 1=increase
+int8_t statusChangeY = -2;
+// Candidate is valid only after a small positive single-axis step from level.
+char directionCheckAxis = 0;
+int recommendedDirectionX = 0; // 0 means not observed, never a valid direction.
+int recommendedDirectionY = 0;
 bool joystickStablePressed = false;
 bool joystickLastRawPressed = false;
 bool joystickLongHandled = false;
@@ -231,11 +240,13 @@ bool positionIsFresh() {
 
 
 void writeManualServoX(int angle) {
+  directionCheckAxis = 0;
   servoAngleX = constrain(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
   servoX.write(servoAngleX);
 }
 
 void writeManualServoY(int angle) {
+  directionCheckAxis = 0;
   servoAngleY = constrain(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
   servoY.write(servoAngleY);
 }
@@ -246,7 +257,7 @@ void writeManualBoth(int xAngle, int yAngle) {
 }
 
 
-void calibrateJoystickCenter() {
+void calibrateJoystickCenter(bool announce) {
   long sumX = 0;
   long sumY = 0;
   constexpr uint8_t samples = 32;
@@ -259,14 +270,33 @@ void calibrateJoystickCenter() {
   joystickCenterY = (int)(sumY / samples);
   joystickRawX = joystickCenterX;
   joystickRawY = joystickCenterY;
-  Serial.print(F("JOYCAL,CX=")); Serial.print(joystickCenterX);
-  Serial.print(F(",CY=")); Serial.println(joystickCenterY);
+  if (announce) {
+    Serial.print(F("JOYCAL,CX=")); Serial.print(joystickCenterX);
+    Serial.print(F(",CY=")); Serial.println(joystickCenterY);
+  }
 }
 
 int joystickDirectionFromAxis(int raw, int center, int direction) {
   const int delta = (raw - center) * direction;
   if (abs(delta) <= JOYSTICK_DEADZONE) return 0;
   return delta > 0 ? 1 : -1;
+}
+
+const char *joystickRawState(int raw, int center) {
+  const int delta = raw - center;
+  if (abs(delta) <= JOYSTICK_DEADZONE) return "CENTER";
+  return delta > 0 ? "HIGH" : "LOW";
+}
+
+void printJoystickReadings() {
+  Serial.print(F("JOY,X_ADC=")); Serial.print(joystickRawX);
+  Serial.print(F(",X_CENTER=")); Serial.print(joystickCenterX);
+  Serial.print(F(",X_DELTA=")); Serial.print(joystickRawX - joystickCenterX);
+  Serial.print(F(",X_STATE=")); Serial.print(joystickRawState(joystickRawX, joystickCenterX));
+  Serial.print(F(",Y_ADC=")); Serial.print(joystickRawY);
+  Serial.print(F(",Y_CENTER=")); Serial.print(joystickCenterY);
+  Serial.print(F(",Y_DELTA=")); Serial.print(joystickRawY - joystickCenterY);
+  Serial.print(F(",Y_STATE=")); Serial.println(joystickRawState(joystickRawY, joystickCenterY));
 }
 
 const char *testMoveModeName(TestMoveMode mode) {
@@ -277,39 +307,23 @@ const char *testMoveModeName(TestMoveMode mode) {
   return "?";
 }
 
-void printTestModeGuide() {
-  if (testMoveMode == TEST_MICRO_STEP) {
-    Serial.println(F("MODE 1: MICRO STEP (1 degree)"));
-  } else {
-    Serial.print(F("MODE 2: ENDPOINT ("));
-    Serial.print(SERVO_MIN_ANGLE);
-    Serial.print(F("-"));
-    Serial.print(SERVO_MAX_ANGLE);
-    Serial.println(F(")"));
-  }
-  Serial.print(F("LIMITS,SERVO_MIN_ANGLE="));
-  Serial.print(SERVO_MIN_ANGLE);
-  Serial.print(F(",SERVO_MAX_ANGLE="));
-  Serial.print(SERVO_MAX_ANGLE);
-  Serial.print(F(",SERVO_LIMIT_OFFSET_DEG="));
-  Serial.println(SERVO_LIMIT_OFFSET_DEG);
-  Serial.println(F("JOY,ONE_DEFLECTION_ONE_AXIS,RETURN_CENTER_TO_REARM"));
-  Serial.println(F("JOYBTN,SHORT=SWITCH_MODE,LONG=CENTER_BOTH_AXES"));
-}
-
 void selectTestMoveMode(TestMoveMode mode) {
+  directionCheckAxis = 0;
   testMoveMode = mode;
 }
 
 void cycleTestMoveMode() {
   selectTestMoveMode(testMoveMode == TEST_MICRO_STEP ? TEST_ENDPOINT : TEST_MICRO_STEP);
-  Serial.print(F("JOYMODE,"));
-  Serial.println(testMoveModeName(testMoveMode));
-  printTestModeGuide();
 }
 
-void applyOneJoystickMove(bool xAxis, int direction) {
+void applyOneJoystickMove(bool xAxis, int direction, bool fromJoystick) {
   if (direction == 0) return;
+  const int before = xAxis ? servoAngleX : servoAngleY;
+  const int center = xAxis ? testCenterX : testCenterY;
+  const int other = xAxis ? servoAngleY : servoAngleX;
+  const int otherCenter = xAxis ? testCenterY : testCenterX;
+  const char axis = xAxis ? 'X' : 'Y';
+  const bool continuingCheck = directionCheckAxis == axis;
 
   if (testMoveMode == TEST_ENDPOINT) {
     const int target = direction > 0 ? SERVO_MAX_ANGLE : SERVO_MIN_ANGLE;
@@ -317,15 +331,21 @@ void applyOneJoystickMove(bool xAxis, int direction) {
     else writeManualServoY(target);
   } else {
     const int delta = direction * TEST_MICRO_STEP_DEG;
-    if (xAxis) writeManualServoX(servoAngleX + delta);
-    else writeManualServoY(servoAngleY + delta);
+    if (xAxis) writeManualServoX(before + delta);
+    else writeManualServoY(before + delta);
+  }
+  const int after = xAxis ? servoAngleX : servoAngleY;
+  // Permit 1-3 positive degrees from the recorded centre, one axis only.
+  if (testMoveMode == TEST_MICRO_STEP && direction > 0 && after > before &&
+      other == otherCenter && (before == center || continuingCheck) &&
+      after > center && after <= center + 3) {
+    directionCheckAxis = axis;
   }
 
-  Serial.print(F("JOYMOVE,"));
-  Serial.print(xAxis ? 'X' : 'Y');
-  Serial.print(direction > 0 ? F(",POS,") : F(",NEG,"));
-  Serial.print(F("ANGLE="));
-  Serial.println(xAxis ? servoAngleX : servoAngleY);
+  statusMoveSource = fromJoystick ? 1 : 2;
+  const int8_t change = after > before ? 1 : after < before ? -1 : 0;
+  if (xAxis) statusChangeX = change;
+  else statusChangeY = change;
   printTestStatus();
 }
 
@@ -355,14 +375,14 @@ void updateJoystickTestControl() {
   // move at the same time during mechanical calibration.
   const int dx = abs(joystickRawX - joystickCenterX);
   const int dy = abs(joystickRawY - joystickCenterY);
-  if (dx >= dy && dirX != 0) {
-    applyOneJoystickMove(true, dirX);
-  } else if (dirY != 0) {
-    applyOneJoystickMove(false, dirY);
-  }
-
   joystickMoveArmed = false;
   lastJoystickMoveMs = nowMs;
+  if (dx >= dy && dirX != 0) {
+    applyOneJoystickMove(true, dirX, true);
+  } else if (dirY != 0) {
+    applyOneJoystickMove(false, dirY, true);
+  }
+
 }
 
 void updateJoystickButton() {
@@ -384,7 +404,6 @@ void updateJoystickButton() {
       cycleTestMoveMode();
       joystickMoveArmed = false;
       lastJoystickMoveMs = nowMs;
-      Serial.println(F("JOYBTN,NEXT_MODE"));
       printTestStatus();
     }
   }
@@ -396,7 +415,6 @@ void updateJoystickButton() {
       writeManualBoth(testCenterX, testCenterY);
       joystickMoveArmed = false;
       lastJoystickMoveMs = nowMs;
-      Serial.println(F("JOYBTN,CENTER"));
       printTestStatus();
     } else if (controllerState != RUN) {
       enterTestMode();
@@ -404,46 +422,54 @@ void updateJoystickButton() {
   }
 }
 
+void printServoChange(int8_t change) {
+  if (change > 0) Serial.print(F("INCREASE"));
+  else if (change == -1) Serial.print(F("DECREASE"));
+  else if (change == 0) Serial.print(F("NO_CHANGE_LIMIT"));
+  else Serial.print(F("NONE"));
+}
+
+void printJoystickDirection(int raw, int center) {
+  const int delta = raw - center;
+  if (abs(delta) <= JOYSTICK_DEADZONE) Serial.print(F("CENTER"));
+  else if (delta > 0) Serial.print(F("INCREASE"));
+  else Serial.print(F("DECREASE"));
+}
+
 void printTestStatus() {
-  // Keep one complete TEST status update to exactly three easy-to-read lines:
-  // mode first, then X-axis, then Y-axis.
-  Serial.print(F("MODE,NAME="));
-  Serial.print(testMoveModeName(testMoveMode));
+  // A normal accepted movement produces exactly these three lines.
+  if (statusMoveSource != 1) {
+    joystickRawX = analogRead(JOYSTICK_X_PIN);
+    joystickRawY = analogRead(JOYSTICK_Y_PIN);
+  }
+  Serial.print(F("MODE,NAME=")); Serial.print(testMoveModeName(testMoveMode));
   Serial.print(F(",ACTION="));
   if (testMoveMode == TEST_ENDPOINT) Serial.print(F("ENDPOINT"));
-  else {
-    Serial.print(F("MICRO_STEP_"));
-    Serial.print(TEST_MICRO_STEP_DEG);
-    Serial.print(F("DEG"));
-  }
-  Serial.print(F(",ARMED="));
-  Serial.println(joystickMoveArmed ? 1 : 0);
+  else { Serial.print(F("MICRO_STEP_")); Serial.print(TEST_MICRO_STEP_DEG); Serial.print(F("DEG")); }
+  Serial.print(F(",ARMED=")); Serial.print(joystickMoveArmed ? 1 : 0);
+  Serial.print(F(",SOURCE="));
+  Serial.println(statusMoveSource == 1 ? F("JOYSTICK") : statusMoveSource == 2 ? F("SERIAL") : F("NONE"));
 
-  Serial.print(F("X,ANGLE="));
-  Serial.print(servoAngleX);
-  Serial.print(F(",CENTER="));
-  Serial.print(testCenterX);
-  Serial.print(F(",LIMIT="));
-  Serial.print(SERVO_MIN_ANGLE);
-  Serial.print('-');
-  Serial.print(SERVO_MAX_ANGLE);
-  Serial.print(F(",PIN="));
-  Serial.print(SERVO_X_PIN);
-  Serial.print(F(",DIRECTION="));
-  Serial.println(SERVO_X_DIRECTION);
+  Serial.print(F("X,ANGLE=")); Serial.print(servoAngleX);
+  Serial.print(F(",CENTER=")); Serial.print(testCenterX);
+  Serial.print(F(",LIMIT=")); Serial.print(SERVO_MIN_ANGLE); Serial.print('-'); Serial.print(SERVO_MAX_ANGLE);
+  Serial.print(F(",PIN=")); Serial.print(SERVO_X_PIN);
+  Serial.print(F(",TEST_FW_PID_DIR=")); Serial.print(SERVO_X_DIRECTION);
+  Serial.print(F(",JOY_ADC=")); Serial.print(joystickRawX);
+  Serial.print(F(",JOY_DIR=")); printJoystickDirection(joystickRawX, joystickCenterX);
+  Serial.print(F(",SERVO_CHANGE=")); printServoChange(statusChangeX); Serial.println(F(""));
 
-  Serial.print(F("Y,ANGLE="));
-  Serial.print(servoAngleY);
-  Serial.print(F(",CENTER="));
-  Serial.print(testCenterY);
-  Serial.print(F(",LIMIT="));
-  Serial.print(SERVO_MIN_ANGLE);
-  Serial.print('-');
-  Serial.print(SERVO_MAX_ANGLE);
-  Serial.print(F(",PIN="));
-  Serial.print(SERVO_Y_PIN);
-  Serial.print(F(",DIRECTION="));
-  Serial.println(SERVO_Y_DIRECTION);
+  Serial.print(F("Y,ANGLE=")); Serial.print(servoAngleY);
+  Serial.print(F(",CENTER=")); Serial.print(testCenterY);
+  Serial.print(F(",LIMIT=")); Serial.print(SERVO_MIN_ANGLE); Serial.print('-'); Serial.print(SERVO_MAX_ANGLE);
+  Serial.print(F(",PIN=")); Serial.print(SERVO_Y_PIN);
+  Serial.print(F(",TEST_FW_PID_DIR=")); Serial.print(SERVO_Y_DIRECTION);
+  Serial.print(F(",JOY_ADC=")); Serial.print(joystickRawY);
+  Serial.print(F(",JOY_DIR=")); printJoystickDirection(joystickRawY, joystickCenterY);
+  Serial.print(F(",SERVO_CHANGE=")); printServoChange(statusChangeY); Serial.println(F(""));
+  statusMoveSource = 0;
+  statusChangeX = -2;
+  statusChangeY = -2;
 }
 
 void printTestCalibration() {
@@ -462,6 +488,15 @@ void printTestCalibration() {
   Serial.print(F("-"));
   Serial.print(SERVO_MAX_ANGLE);
   Serial.println(F(";"));
+  if (recommendedDirectionX != 0) {
+    Serial.print(F("constexpr int SERVO_X_DIRECTION = "));
+    Serial.print(recommendedDirectionX); Serial.println(F(";"));
+  } else Serial.println(F("// SERVO_X_DIRECTION: NOT TESTED"));
+  if (recommendedDirectionY != 0) {
+    Serial.print(F("constexpr int SERVO_Y_DIRECTION = "));
+    Serial.print(recommendedDirectionY); Serial.println(F(";"));
+  } else Serial.println(F("// SERVO_Y_DIRECTION: NOT TESTED"));
+  Serial.println(F("// Direction depends on observed platform movement; verify before PID RUN."));
   Serial.println(F("-----------------------------------------"));
 }
 
@@ -470,13 +505,13 @@ void enterTestMode() {
   controllerState = TEST;
   testCenterX = SERVO_X_CENTER;
   testCenterY = SERVO_Y_CENTER;
+  recommendedDirectionX = 0;
+  recommendedDirectionY = 0;
   selectTestMoveMode(TEST_MICRO_STEP);
   writeManualBoth(testCenterX, testCenterY);
-  calibrateJoystickCenter();
+  calibrateJoystickCenter(false);
   joystickMoveArmed = true;
   lastJoystickMoveMs = millis() - JOYSTICK_ACTION_DELAY_MS;
-  Serial.println(F("STATE,TEST"));
-  printTestModeGuide();
   printTestStatus();
 }
 
@@ -624,6 +659,8 @@ void printHelp() {
   Serial.println(F("PC protocol: POS,x,y,timestamp | LOST | RUN | READY"));
   Serial.println(F("TARGET,x,y | PIDX,kp,ki,kd | PIDY,kp,ki,kd | PING"));
   Serial.println(F("Hardware test: TEST | EXITTEST | CENTER | STATUS | SHOW | JOYCAL | JOY | MODE,1|2"));
+  Serial.println(F("Direction: CENTER -> MODE,1 -> X+ or Y+ (1-3 steps) -> DIR,X|Y,UP|DOWN"));
+  Serial.println(F("UP/DOWN: observed RIGHT side (X) or FAR side (Y); NOT joystick ADC."));
   Serial.println(F("Telemetry: TELNOW=once | TELON=auto 10Hz | TELOFF=quiet (default)"));
   Serial.println(F("Joystick TEST: one push = one axis move; return stick to center to re-arm"));
   Serial.println(F("Joystick SW: short=MODE 1 MICRO STEP / MODE 2 ENDPOINT, long=center"));
@@ -682,47 +719,75 @@ void processCommand(char *line) {
       return;
     }
     if (strcmp(command, "JOYCAL") == 0 && strtok(NULL, ",") == NULL) {
-      calibrateJoystickCenter();
+      calibrateJoystickCenter(true);
       return;
     }
     if (strcmp(command, "JOY") == 0 && strtok(NULL, ",") == NULL) {
       joystickRawX = analogRead(JOYSTICK_X_PIN);
       joystickRawY = analogRead(JOYSTICK_Y_PIN);
-      Serial.print(F("JOY,X=")); Serial.print(joystickRawX);
-      Serial.print(F(",Y=")); Serial.print(joystickRawY);
-      Serial.print(F(",CX=")); Serial.print(joystickCenterX);
-      Serial.print(F(",CY=")); Serial.println(joystickCenterY);
+      printJoystickReadings();
+      return;
+    }
+    if (strcmp(command, "DIR") == 0) {
+      char *axis = strtok(NULL, ",");
+      char *observed = strtok(NULL, ",");
+      if (axis == NULL || observed == NULL || strtok(NULL, ",") != NULL ||
+          (strcmp(axis, "X") != 0 && strcmp(axis, "Y") != 0) ||
+          (strcmp(observed, "UP") != 0 && strcmp(observed, "DOWN") != 0)) {
+        Serial.println(F("ERROR,USE_DIR_X_OR_Y_UP_OR_DOWN"));
+        return;
+      }
+      if (directionCheckAxis != axis[0] || testMoveMode != TEST_MICRO_STEP) {
+        Serial.println(F("ERROR,DIR_REQUIRES_CENTER_MODE1_1_TO_3_POSITIVE_STEPS"));
+        return;
+      }
+      // target-ball is negative on the positive side; UP on servo + means -1.
+      const int recommendation = strcmp(observed, "UP") == 0 ? -1 : 1;
+      if (axis[0] == 'X') recommendedDirectionX = recommendation;
+      else recommendedDirectionY = recommendation;
+      Serial.print(F("RECOMMENDED,FROM_OBSERVATION,SERVO_")); Serial.print(axis);
+      Serial.print(F("_DIRECTION=")); Serial.println(recommendation);
+      Serial.println(F("COPY_TO_FORMAL_PID_AND_VERIFY; NOT_AUTO_APPLIED"));
       return;
     }
     if (strcmp(command, "X+") == 0 && strtok(NULL, ",") == NULL) {
-      applyOneJoystickMove(true, 1);
+      applyOneJoystickMove(true, 1, false);
       return;
     }
     if (strcmp(command, "X-") == 0 && strtok(NULL, ",") == NULL) {
-      applyOneJoystickMove(true, -1);
+      applyOneJoystickMove(true, -1, false);
       return;
     }
     if (strcmp(command, "Y+") == 0 && strtok(NULL, ",") == NULL) {
-      applyOneJoystickMove(false, 1);
+      applyOneJoystickMove(false, 1, false);
       return;
     }
     if (strcmp(command, "Y-") == 0 && strtok(NULL, ",") == NULL) {
-      applyOneJoystickMove(false, -1);
+      applyOneJoystickMove(false, -1, false);
       return;
     }
     if (strcmp(command, "SETCX") == 0 && strtok(NULL, ",") == NULL) {
       testCenterX = servoAngleX;
+      directionCheckAxis = 0;
+      recommendedDirectionX = 0;
+      recommendedDirectionY = 0;
       Serial.print(F("CENTER_X_SET,")); Serial.println(testCenterX);
       return;
     }
     if (strcmp(command, "SETCY") == 0 && strtok(NULL, ",") == NULL) {
       testCenterY = servoAngleY;
+      directionCheckAxis = 0;
+      recommendedDirectionX = 0;
+      recommendedDirectionY = 0;
       Serial.print(F("CENTER_Y_SET,")); Serial.println(testCenterY);
       return;
     }
     if (strcmp(command, "SETC") == 0 && strtok(NULL, ",") == NULL) {
       testCenterX = servoAngleX;
       testCenterY = servoAngleY;
+      directionCheckAxis = 0;
+      recommendedDirectionX = 0;
+      recommendedDirectionY = 0;
       printTestStatus();
       return;
     }
@@ -734,7 +799,6 @@ void processCommand(char *line) {
           Serial.println(F("ERROR,BAD_STEP,USE_1"));
           return;
         }
-        printTestModeGuide();
         printTestStatus();
       } else {
         Serial.println(F("ERROR,BAD_STEP,USE_1"));
@@ -750,7 +814,6 @@ void processCommand(char *line) {
           Serial.println(F("ERROR,BAD_MODE,USE_1_2"));
           return;
         }
-        printTestModeGuide();
         printTestStatus();
       } else {
         Serial.println(F("ERROR,BAD_MODE,USE_1_2"));
@@ -886,19 +949,14 @@ void setup() {
   digitalWrite(STATUS_LED_PIN, LOW);
   pinMode(JOYSTICK_SW_PIN, INPUT_PULLUP);
   Serial.begin(115200);
+  // The same message covers manual reset, power-on, or other restarts.
+  Serial.println(F("RESET/BOOT"));
   servoX.attach(SERVO_X_PIN);
   servoY.attach(SERVO_Y_PIN);
   writeNeutralServos();
-  Serial.println(F("BALL_CTRL,PC_VISION_MODE"));
-  Serial.println(F("FEATURE,HARDWARE_TEST_MODE"));
-  Serial.println(F("FEATURE,5PIN_JOYSTICK_DISCRETE_TEST,A0,A1,D2"));
-  Serial.println(F("TIP,AUTO_ENTER_TEST_ON_BOOT"));
-  Serial.println(F("TEST_MODES,MODE1=MICRO_STEP_1_DEG,MODE2=ENDPOINT"));
-  Serial.println(F("TELEMETRY,QUIET_DEFAULT,USE_TELNOW_OR_TELON"));
   // Boot directly into TEST mode so the joystick controls the platform
   // immediately, without the 1.5 s long-press requirement.
   enterTestMode();
-  printHelp();
 }
 
 void loop() {

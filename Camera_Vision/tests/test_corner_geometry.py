@@ -86,6 +86,25 @@ class PlatformGeometryTest(unittest.TestCase):
         self.assertAlmostEqual(contact[0], 200.0)
         self.assertAlmostEqual(contact[1], 197.0)
 
+    def test_measured_contact_direction_matches_reference_image(self):
+        vision = BallVision.__new__(BallVision)
+        vision.corners = [(100.0, 100.0), (300.0, 100.0), (320.0, 300.0), (80.0, 280.0)]
+        vision.config = {"detection": {"contact_offset_radius": 0.98,
+                                        "contact_direction_px": [0.014, 1.0]}}
+
+        x, y = vision._ball_contact_point((335.0, 193.0), 52.0)
+        self.assertAlmostEqual(x, 335.7, delta=0.1)
+        self.assertAlmostEqual(y, 244.0, delta=0.1)
+
+    def test_invalid_contact_direction_falls_back_to_near_edge(self):
+        vision = BallVision.__new__(BallVision)
+        vision.corners = [(100.0, 100.0), (300.0, 100.0), (320.0, 300.0), (80.0, 300.0)]
+        vision.config = {"detection": {"contact_offset_radius": 0.85,
+                                        "contact_direction_px": [0, 0]}}
+        x, y = vision._ball_contact_point((200.0, 180.0), 20.0)
+        self.assertAlmostEqual(x, 200.0)
+        self.assertAlmostEqual(y, 197.0)
+
     def test_position_outside_calibrated_platform_is_rejected_before_serial(self):
         vision = BallVision.__new__(BallVision)
 

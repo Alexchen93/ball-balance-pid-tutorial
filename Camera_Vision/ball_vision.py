@@ -25,7 +25,7 @@ from serial.tools import list_ports
 CONTROL_AUTHORITY_LABEL = "PID SOURCE: Nano firmware only"
 PLATFORM_HALF_SPAN_PCT = 100.0
 PLATFORM_FULL_SPAN_PCT = PLATFORM_HALF_SPAN_PCT * 2.0
-WINDOW_NAME = f"Ball vision: {CONTROL_AUTHORITY_LABEL} | b=HSV c=TL-TR-BR-BL r=RUN p=READY q=quit"
+WINDOW_NAME = "Ball vision"
 
 
 @dataclass(frozen=True)
@@ -243,6 +243,8 @@ class NanoTransport:
         self.baudrate = baudrate
         self.last_telemetry = "No serial selected; READY setup only" if disabled else "Nano disconnected; press n to search."
         self.last_terminal_controller_state: str | None = None
+        self.joystick_target: tuple[float, float, bool] | None = None
+        self.last_joystick_armed: bool | None = None
         if disabled:
             print("No Nano selected. READY setup is active; press n to search for Nano later.")
         elif port:
@@ -368,7 +370,18 @@ class NanoTransport:
                 # New: TEL,state,link,ballX,ballY,eXPct,eYPct,uXPct,uYPct,tiltXDeg,tiltYDeg,servoX,servoY,ageMs
                 # Legacy 12-field TEL is accepted only for RUN startup compatibility before reflashing.
                 parts = line.split(",")
-                if parts[0] == "TEL" and len(parts) in (12, 14):
+                if parts[0] == "TGT" and len(parts) == 4:
+                    try:
+                        x, y = float(parts[1]), float(parts[2])
+                        if math.isfinite(x) and math.isfinite(y) and parts[3] in ("0", "1"):
+                            self.joystick_target = (x, y, parts[3] == "1")
+                            armed = parts[3] == "1"
+                            if armed != getattr(self, "last_joystick_armed", None):
+                                print("JOYSTICK: armed." if armed else "JOYSTICK: release to neutral to arm.")
+                                self.last_joystick_armed = armed
+                    except ValueError:
+                        pass
+                elif parts[0] == "TEL" and len(parts) in (12, 14):
                     self.last_telemetry = line
                     events.append(line)
                     # Keep setup quiet: print one status when READY changes, then
@@ -422,6 +435,8 @@ class NanoTransport:
         finally:
             self.connection.close()
             self.connection = None
+            self.joystick_target = None
+            self.last_joystick_armed = None
 
 
 class BallVision:
@@ -439,6 +454,8 @@ class BallVision:
         self.filtered_position: np.ndarray | None = None
         self.zero_reference = np.array([0.0, 0.0], dtype=np.float32)
         self.latest_frame: np.ndarray | None = None
+        self.cross_check_marker: tuple[float, float] | None = None
+        self.cross_check_marker_until = 0.0
         self.latest_hsv: np.ndarray | None = None
         self.corner_labels = CORNER_LABELS_TLTRBRBL
         self.pid_running = False
@@ -553,6 +570,7 @@ class BallVision:
         self.run_start_pos_sent_at = 0.0
         self.transport.send("READY")
         self.config = load_config(self.config_path)
+        self.cross_check_marker = None
         self.corners = [tuple(point) for point in self.config["platform"].get("corners_px", [])]
         self.pending_corners = []
         self.zero_reference = np.array([0.0, 0.0], dtype=np.float32)
@@ -669,14 +687,22 @@ class BallVision:
         """Estimate the ball's platform contact point from its visible circle.
 
         The homography is calibrated on the platform plane, not at the ball's
-        elevated visual centre. Move the detection toward the platform's near
-        edge by a bounded fraction of the detected radius before mapping it.
+        elevated visual centre. Use the optional measured image-space direction;
+        otherwise use the platform's near-edge direction for older configurations.
         """
         if len(self.corners) != 4:
             return center
         far_mid = np.mean(np.float32(self.corners[:2]), axis=0)
         near_mid = np.mean(np.float32(self.corners[2:]), axis=0)
         direction = near_mid - far_mid
+        measured_direction = self.config.get("detection", {}).get("contact_direction_px")
+        if isinstance(measured_direction, (list, tuple)) and len(measured_direction) == 2:
+            try:
+                measured = np.array(measured_direction, dtype=np.float32)
+                if np.all(np.isfinite(measured)) and float(np.linalg.norm(measured)) > 1e-6:
+                    direction = measured
+            except (TypeError, ValueError, OverflowError):
+                pass  # Invalid optional direction: retain the legacy near-edge estimate.
         length = float(np.linalg.norm(direction))
         if not math.isfinite(length) or length <= 1e-6:
             return center
@@ -856,6 +882,85 @@ class BallVision:
             self.run_start_pos_sent_at = 0.0
             self._safe_ready(f"RUN handshake timed out while waiting for Nano {phase}. {detail} Back to READY; check serial RX/TX and Nano firmware protocol before pressing R again.")
 
+    def _check_platform_cross(self, frame: np.ndarray, sample: tuple[float, float]) -> tuple[tuple[float, float], float, float, float, float] | None:
+        """Estimate a two-axis mark on one READY frame; never alter calibration."""
+        if not self._has_platform():
+            return None
+        sx, sy = round(sample[0]), round(sample[1])
+        if not (0 <= sx < frame.shape[1] and 0 <= sy < frame.shape[0]):
+            return None
+        hue, saturation, value = (int(v) for v in cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[sy, sx])
+        warped_h = np.diag([2.0, 2.0, 1.0]) @ self.homography
+        warped = cv2.warpPerspective(frame, warped_h, (401, 401))
+        hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+        if value < 100:
+            mask = cv2.inRange(hsv[:, :, 2], 0, min(115, value + 35))
+        elif saturation >= 65:
+            hue_delta = np.abs(hsv[:, :, 0].astype(np.int16) - hue)
+            hue_delta = np.minimum(hue_delta, 180 - hue_delta)
+            mask = ((hue_delta <= 10) & (hsv[:, :, 1] >= max(50, saturation - 80)) &
+                    (hsv[:, :, 2] >= max(45, value - 110))).astype(np.uint8) * 255
+        else:
+            print("十字線檢查：取樣太亮或有反光，請點選清楚的黑色線條。")
+            return None
+        # Exclude extrapolated borders, where perspective fill or calibration edges can look like ink.
+        mask[:3, :] = 0
+        mask[-3:, :] = 0
+        mask[:, :3] = 0
+        mask[:, -3:] = 0
+        if cv2.countNonZero(mask) > mask.size * 0.30:
+            print("十字線檢查：黑色區域太多，可能混入背景或陰影，請改善背景及光線。")
+            return None
+        segments = cv2.HoughLinesP(mask, 1, np.pi / 180, threshold=45,
+                                   minLineLength=90, maxLineGap=25)
+        if segments is None:
+            return None
+        sample_warp = cv2.perspectiveTransform(np.float32([[sample]]), warped_h)[0, 0]
+        if not np.all(np.isfinite(sample_warp)) or not (3 <= sample_warp[0] <= 397 and 3 <= sample_warp[1] <= 397):
+            print("十字線檢查：請點選四角框內的黑色線條。")
+            return None
+        horizontal, vertical = [], []
+        for line in segments[:, 0, :]:
+            x1, y1, x2, y2 = (float(v) for v in line)
+            dx, dy = x2 - x1, y2 - y1
+            length = math.hypot(dx, dy)
+            if abs(dx) >= 90 and abs(dy) <= abs(dx) * 0.45:
+                m = dy / dx
+                horizontal.append((m, y1 - m * x1, length, min(x1, x2), max(x1, x2)))
+            elif abs(dy) >= 90 and abs(dx) <= abs(dy) * 0.45:
+                m = dx / dy
+                vertical.append((m, x1 - m * y1, length, min(y1, y2), max(y1, y2)))
+        best = None
+        for mh, bh, lh, hmin, hmax in horizontal:
+            for mv, bv, lv, vmin, vmax in vertical:
+                denominator = 1.0 - mv * mh
+                if abs(denominator) < 1e-6:
+                    continue
+                px = (mv * bh + bv) / denominator
+                py = mh * px + bh
+                if not (3 <= px <= 397 and 3 <= py <= 397):
+                    continue
+                # Both segments must actually reach the intersection; sampled ink must
+                # lie on at least one of the two selected lines, not an unrelated object.
+                if px < hmin - 35 or px > hmax + 35 or py < vmin - 35 or py > vmax + 35:
+                    continue
+                dh = abs(sample_warp[1] - (mh * sample_warp[0] + bh)) / math.hypot(1, mh)
+                dv = abs(sample_warp[0] - (mv * sample_warp[1] + bv)) / math.hypot(1, mv)
+                if min(dh, dv) > 12:
+                    continue
+                score = lh + lv
+                if best is None or score > best[0]:
+                    best = (score, px, py, mh, mv)
+        if best is None:
+            return None
+        _, px, py, mh, mv = best
+        cross_img = cv2.perspectiveTransform(np.float32([[[px, py]]]), np.linalg.inv(warped_h))[0, 0]
+        if not np.all(np.isfinite(cross_img)):
+            return None
+        # dx,dy are percentages of the whole calibrated width/height, not PID coordinates.
+        return ((float(cross_img[0]), float(cross_img[1])), (px - 200.0) / 4.0,
+                (200.0 - py) / 4.0, math.degrees(math.atan(mh)), math.degrees(math.atan(mv)))
+
     def _draw_overlay(self, frame: np.ndarray, ball: tuple[tuple[float, float], float] | None,
                       position: tuple[float, float] | None) -> np.ndarray:
         overlay = frame.copy()
@@ -863,54 +968,42 @@ class BallVision:
         if display_corners:
             points = np.int32(display_corners)
             cv2.polylines(overlay, [points], len(display_corners) == 4, (255, 255, 0), 2)
-            for index, point in enumerate(points):
-                if len(display_corners) == 4 and display_corners is self.corners and self.homography is not None:
-                    label = self.corner_labels[index]
-                else:
-                    label = f"{index + 1}/4"
-                cv2.putText(overlay, label, tuple(point), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-            if len(display_corners) == 4 and display_corners is self.corners and self.homography is not None:
-                cv2.putText(overlay, "ORDER: TL -> TR -> BR -> BL", (10, overlay.shape[0] - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            for point in points:
+                cv2.circle(overlay, tuple(point), 3, (255, 255, 0), -1)
         if ball:
             center, radius = ball
             contact = self._ball_contact_point(center, radius)
             cv2.circle(overlay, (round(center[0]), round(center[1])), round(radius), (0, 255, 0), 2)
             cv2.circle(overlay, (round(center[0]), round(center[1])), 3, (0, 0, 255), -1)
             cv2.circle(overlay, (round(contact[0]), round(contact[1])), 4, (0, 165, 255), -1)
-            cv2.putText(overlay, "CONTACT", (round(contact[0]) + 6, round(contact[1]) + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+
+        target = getattr(self.transport, "joystick_target", None)
+        if self.pid_running and target is not None and self.homography is not None:
+            mapped = np.float32([[[target[0] + PLATFORM_HALF_SPAN_PCT,
+                                   PLATFORM_HALF_SPAN_PCT - target[1]]]])
+            point = cv2.perspectiveTransform(mapped, np.linalg.inv(self.homography))[0][0]
+            if np.all(np.isfinite(point)):
+                center = (int(round(point[0])), int(round(point[1])))
+                cv2.drawMarker(overlay, center, (255, 0, 255), cv2.MARKER_CROSS, 18, 2)
+
+        marker = getattr(self, "cross_check_marker", None)
+        if marker is not None and time.monotonic() < self.cross_check_marker_until:
+            cv2.drawMarker(overlay, (round(marker[0]), round(marker[1])), (255, 0, 0),
+                           cv2.MARKER_CROSS, 20, 2)
 
         if self.pid_running:
-            run_state = "RUN"
+            state = "RUN"
         elif self.run_start_phase is not None:
-            run_state = "RUN START: waiting for Nano ACK"
+            state = "STARTING"
+        elif self.mode != "normal" or not self._ready_complete():
+            state = "SETUP"
         else:
-            run_state = "READY COMPLETE" if self._ready_complete() else "READY SETUP"
-        nano_status = "NANO: CONNECTED" if self.transport.is_connected else "NANO: DISCONNECTED (press n to search)"
-        items = self._ready_items()
-        checklist = "  ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in items.items())
-        if self.pid_running:
-            position_text = "BALL: LOST" if position is None else f"BALL: X={position[0]:+.1f}%  Y={position[1]:+.1f}%"
-        else:
-            position_text = "READY: P=hold READY; no POS/LOST/servo commands are sent"
-        lines = [
-            CONTROL_AUTHORITY_LABEL,
-            f"STATE: {run_state}",
-            nano_status,
-            checklist,
-            self._ready_prompt(),
-            position_text,
-            f"FPS: {self.fps:.1f}",
-        ]
-        if self.corner_order_message is not None:
-            lines.insert(4, self.corner_order_message[:95])
-        if self.pid_running:
-            lines.append(self.transport.last_telemetry[:75])
-        for index, line in enumerate(lines):
-            y = 25 + index * 25
-            cv2.putText(overlay, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-            cv2.putText(overlay, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1)
-        if self.mode != "normal":
-            cv2.putText(overlay, f"ACTIVE STEP: {self.mode}", (10, overlay.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            state = "READY"
+        # OPEN means the serial port is open; it is not a live Nano heartbeat.
+        link = "OPEN" if self.transport.is_connected else "DISCONNECTED"
+        status = f"STATE: {state} | NANO: {link}"
+        cv2.putText(overlay, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+        cv2.putText(overlay, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         return overlay
 
     def _mouse_callback(self, event: int, x: int, y: int, _flags: int, _param: Any) -> None:
@@ -920,6 +1013,23 @@ class BallVision:
         if click_point is None:
             return
         click_x, click_y = click_point
+        if self.mode == "cross_sample":
+            self.mode = "normal"
+            self.cross_check_marker = None
+            result = self._check_platform_cross(self.latest_frame, (click_x, click_y))
+            if result is None:
+                print("十字線檢查：無法可靠辨識兩條長線。請移開球、減少反光，按 X 後再點黑色線條。")
+            else:
+                self.cross_check_marker, dx, dy, h_angle, v_angle = result
+                self.cross_check_marker_until = time.monotonic() + 5.0
+                print(f"十字線檢查：交點相對四角中心 X={dx:+.1f}% 平台寬、Y={dy:+.1f}% 平台高（右與遠端為正）。")
+                print(f"十字線檢查：透視校正後兩軸偏轉角約 {h_angle:+.1f}°、{v_angle:+.1f}°；藍色十字顯示 5 秒。")
+                if abs(dx) > 5.0 or abs(dy) > 5.0 or abs(h_angle) > 8.0 or abs(v_angle) > 8.0:
+                    print("十字線檢查：中心差超過寬／高的 5% 或方向偏轉超過 8°；請檢查黑線、反光與四角點選。")
+                else:
+                    print("十字線檢查：中心差及方向在暫定提醒門檻內。")
+                print("十字線只供輔助檢查，無法保證四角正確；結果可能受遮擋、反光與背景影響。校正和 PID 值沒有改變。")
+            return
         if self.mode == "ball_colour" and self.latest_hsv is not None:
             if 0 <= int(click_y) < self.latest_hsv.shape[0] and 0 <= int(click_x) < self.latest_hsv.shape[1]:
                 hue, saturation, value = (int(component) for component in self.latest_hsv[int(click_y), int(click_x)])
@@ -981,15 +1091,26 @@ class BallVision:
             self._safe_ready("B selected. Back to READY; no live position or servo commands are being sent.")
             self.mode = "ball_colour"
             print("B: click the centre of the ball. Only HSV colour will be saved.")
+        elif key in (ord("x"), ord("X")):
+            self._safe_ready("X selected: stopped control before cross inspection.")
+            self.mode = "normal"
+            self.cross_check_marker = None
+            if not self._has_platform():
+                print("十字線檢查：請先用 C 校正平台四角。")
+            else:
+                self.mode = "cross_sample"
+                print("十字線檢查：移開球，點一下黑色十字線的清楚線段；兩條線都要可見。按 P 取消。")
         elif key == ord("c"):
+            self.cross_check_marker = None
             self._safe_ready("C selected. Back to READY; no live position or servo commands are being sent.")
             self.pending_corners = []
             self.filtered_position = None
             self.mode = "corners"
             print("C: 依序點四角：TL -> TR -> BR -> BL（左上、右上、右下、左下）。")
-            print("C click progress will show 1/4..4/4. Old valid platform settings stay active unless the new four corners pass validation.")
+            print("C click progress is printed in the terminal. Old valid platform settings stay active unless the new four corners pass validation.")
         elif key in (ord("p"), ord("P")):
             self._safe_ready("P pressed. Back to READY; sent READY and stopped live POS/LOST/servo control.")
+            self.mode = "normal"
         elif key in (ord("r"), ord("R")):
             if self.pid_running:
                 self._safe_ready("R pressed during RUN. Back to READY; no live position or servo commands are being sent.")
@@ -1012,6 +1133,7 @@ class BallVision:
                 else:
                     print("Cannot RUN: ball is not detected yet. Keep it visible, then press R again.")
             else:
+                self.cross_check_marker = None
                 self._request_run(self.latest_position)
         return True
 
@@ -1025,7 +1147,7 @@ class BallVision:
         if not self.headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
             cv2.setMouseCallback(WINDOW_NAME, self._mouse_callback)
-            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL->TR->BR->BL (calculated centre is zero), R=RUN, P=READY/pause, Q=quit.")
+            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL->TR->BR->BL (calculated centre is zero), X=check drawn cross, R=RUN, P=READY/pause, Q=quit.")
             self._print_ready_checklist()
 
         frame_count = 0

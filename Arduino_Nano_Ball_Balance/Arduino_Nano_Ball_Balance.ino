@@ -28,15 +28,15 @@
 constexpr uint8_t SERVO_X_PIN = 9;
 constexpr uint8_t SERVO_Y_PIN = 10;
 constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
-// ===== 學生校正參數（校正完成後只修改本區） =====
+// ===== 學生機構校正參數（依各組實測結果修改） =====
 // 來源：校正程式的 SETC / SHOW 結果與學習單紀錄。
 // 注意：本次 JOYMOVE / TESTSTAT 觀測到 X=71、Y=76，只代表測試當下的輸出角度，
 // 不可當作正式 PID 的機構中心值。正式 PID 請只轉填/調整下列中心與安全行程常數。
 // 安全限制：中心應落在各軸 MIN/MAX 之間，端點不可超出校正安全範圍。
-// X 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填；本教案最終中心採 90 度。
-constexpr int SERVO_X_CENTER = 74;
-// Y 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填；本教案最終中心採 90 度。
-constexpr int SERVO_Y_CENTER = 76;
+// X 軸水平中心角度；校正完成後從 SETC / SHOW / 學習單轉填。
+constexpr int SERVO_X_CENTER = 77;
+// Y 軸水平中心角度；校正完成後從 SETC / SHOW / 學習單轉填。
+constexpr int SERVO_Y_CENTER = 87;
 // Servo 實體安全行程，也是 normalized PID 輸出 100% 時的最大安全機構要求。
 // 調整 OFFSET 即可改每軸中心 ±安全端點，不需要手算端點；不要使用實體硬停點。
 constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
@@ -46,8 +46,9 @@ constexpr int SERVO_Y_MIN_ANGLE = SERVO_Y_CENTER - SERVO_LIMIT_OFFSET_DEG;
 constexpr int SERVO_Y_MAX_ANGLE = SERVO_Y_CENTER + SERVO_LIMIT_OFFSET_DEG;
 // ===== 學生校正參數結束 =====
 
-constexpr int SERVO_X_DIRECTION = -1; // 已依左右邊緣實測反轉；若球被推向同側，再改回 1。
-constexpr int SERVO_Y_DIRECTION = 1;  // Change to -1 if the Y correction is reversed.
+// 修正方向錯誤時，先停止 RUN，將對應軸的值從 1 改為 -1 或從 -1 改為 1，再重新燒錄。
+constexpr int SERVO_X_DIRECTION = -1;
+constexpr int SERVO_Y_DIRECTION = -1;
 
 constexpr float MAX_PLATFORM_TILT_X_DEG = SERVO_LIMIT_OFFSET_DEG;
 constexpr float MAX_PLATFORM_TILT_Y_DEG = SERVO_LIMIT_OFFSET_DEG;
@@ -57,6 +58,7 @@ constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
 constexpr uint32_t SATURATION_WARNING_MS = 2000UL;
 constexpr float POSITION_RANGE_EPSILON_PCT = 0.50f;
 
+// ===== PID 參數（依各組控制實驗修改；修改後須重新燒錄） =====
 // Nano firmware is the single source of truth for PID constants. Camera Vision
 // sends only vision/control-state commands and must not override these values.
 // PID runs in normalized space: Kp=1.0 means a full-scale position error
@@ -70,6 +72,7 @@ constexpr float DEFAULT_KD_X = 0.5f;
 constexpr float DEFAULT_KP_Y = 1.25f;
 constexpr float DEFAULT_KI_Y = 0.00f;
 constexpr float DEFAULT_KD_Y = 0.5f;
+// ===== PID 參數結束 =====
 
 enum ControllerState : uint8_t { WAIT_LINK, READY, RUN };
 enum LinkState : uint8_t { LINK_WAIT, LINK_OK, BALL_LOST, LINK_LOST, POSITION_RANGE_ERROR, GEOMETRY_REQUIRED };

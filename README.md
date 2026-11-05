@@ -23,6 +23,7 @@ Desktop ───────────────────── USB Seri
 | `Camera_Vision/` | Desktop 的 OpenCV 程式、設定與學生操作說明。 |
 | `Arduino_Nano_Ball_Balance/` | 正式 Camera PID 韌體與接線／調參說明。 |
 | `Arduino_Nano_Ball_Balance_Joystick_Modes/` | **機構校正用**搖桿韌體；不是正式 Camera PID 韌體。 |
+| `Arduino_Nano_Ball_Balance_Maze/` | **迷宮評量用**韌體：搖桿移動目標、攝影機回授及 PID 控球。 |
 | `3d列印檔案/` | 平台、Servo 固定座、鏡頭座等模型（依 `.gitignore` 不上傳）。 |
 
 ## 學生先懂這三件事
@@ -47,14 +48,14 @@ Desktop ───────────────────── USB Seri
 - **綠色圓**：HSV 找到的球外框與其影像圓心。
 - **橘色 `CONTACT` 點**：估計球接觸平台的位置，才是送給 Nano 控制與判斷是否在平台內的點。
 
-斜拍時，球的影像圓心不在平台平面上。程式會依球半徑、平台近端方向，將圓心往接觸方向補償 `0.85 × 半徑`，再做透視轉換。因此請確認**橘色點**而非綠色圓心落在球接觸平台的位置附近。
+斜拍時，球的影像圓心不在平台平面上。目前 `camera_config.json` 使用初步估計的 `0.98 × 半徑` 與接近畫面垂直向下的方向，推估接觸點後再做透視轉換；這是根據一張中央位置參考圖估算，尚需在多個位置實機核對。實際接觸點取決於攝影機視角，不一定在綠色圓周上；詳見 [Camera Vision 操作說明](Camera_Vision/README.md)。
 
 ### 3. PID 在 Nano，不在 Desktop
 
-Camera Vision 只傳送球的位置與安全狀態；正式 Nano 韌體才是 PID、Servo 方向與安全角度的唯一來源。目前起始參數是保守 PD：
+Camera Vision 只傳送球的位置與安全狀態；正式 Nano 韌體才是 PID、Servo 方向與安全角度的唯一來源。目前程式參數採用 PD（尚須依實機校正與測試調整）：
 
 ```text
-X/Y：Kp = 1.25、Ki = 0.00、Kd = 0.12
+X/Y：Kp = 1.25、Ki = 0.00、Kd = 0.50
 ```
 
 - `P`：球偏離中心越遠，回拉傾斜越大。
@@ -106,13 +107,14 @@ sudo usermod -aG dialout "$USER"
 3. 若球接近邊緣才來得及回拉，先看 telemetry 的 `tilt`：
    - 已接近 ±20°：機構回拉力／Servo 速度或影像延遲可能不足。
    - 尚未接近最大：可小幅提高 `Kp`，或調整 `Kd` 讓高速外移提早煞車。
-4. 若出現高頻抖動，先將 `Kd` 由 `0.12` 降為 `0.08`；不要先增加 `Ki`。
+4. 若出現高頻抖動，先停止並檢查辨識與機構，再考慮小幅降低 `Kd`；不要先增加 `Ki`。
 
 ## 文件索引
 
 - [Camera Vision 操作與故障排除](Camera_Vision/README.md)
 - [Nano 韌體、接線、PD 參數與 telemetry](Arduino_Nano_Ball_Balance/README.md)
 - [搖桿機構校正說明](Arduino_Nano_Ball_Balance_Joystick_Modes/README_Joystick_Discrete_Modes.md)
+- [迷宮評量與搖桿目標操作](Arduino_Nano_Ball_Balance_Maze/README.md)
 
 ## 授權
 

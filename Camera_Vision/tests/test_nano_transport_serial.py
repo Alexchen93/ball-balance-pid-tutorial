@@ -78,6 +78,25 @@ class NanoTransportSerialTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(transport.poll(), ["GEOM,OK"])
 
+    def test_maze_target_is_parsed_without_affecting_run_events(self):
+        class BufferedConnection:
+            def __init__(self):
+                self.lines = [b"TGT,12.5,-8.0,1\n", b"TGT,nan,9,1\n", b"TGT,1,2,invalid\n", b"GEOM,OK\n"]
+
+            @property
+            def in_waiting(self):
+                return len(self.lines)
+
+            def readline(self):
+                return self.lines.pop(0)
+
+        transport = self.make_transport()
+        transport.connection = BufferedConnection()
+        with redirect_stdout(io.StringIO()):
+            events = transport.poll()
+        self.assertEqual(events, ["GEOM,OK"])
+        self.assertEqual(transport.joystick_target, (12.5, -8.0, True))
+
     def test_busy_connect_error_reports_holder_details(self):
         transport = self.make_transport()
         error = serial.SerialException("[Errno 16] Device or resource busy: '/dev/ttyUSB0'")
