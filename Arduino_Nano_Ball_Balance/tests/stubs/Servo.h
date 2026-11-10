@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <cmath>
 #include <cstdlib>
+#include <sstream>
+#include <string>
 #define F(x) x
 #define A0 14
 #define A1 15
@@ -19,11 +21,15 @@ inline void digitalWrite(int, int) {}
 template<typename T, typename L, typename H> T constrain(T x, L lo, H hi) { return x < lo ? lo : x > hi ? hi : x; }
 struct Servo { int angle = -1; void attach(int) {} void write(int value) { angle = value; } };
 struct FakeSerial {
+  std::ostringstream out;
   void begin(int) {}
   int available() { return 0; }
   int read() { return -1; }
-  template<typename T> void print(T) {}
-  template<typename T> void print(T, int) {}
-  template<typename T> void println(T) {}
+  void print(uint8_t value) { out << static_cast<unsigned>(value); }
+  template<typename T> void print(T value) { out << value; }
+  template<typename T> void print(T value, int) { out << value; }
+  template<typename T> void println(T value) { out << value << '\n'; }
+  void clear() { out.str(""); out.clear(); }
+  std::string text() const { return out.str(); }
 };
 extern FakeSerial Serial;

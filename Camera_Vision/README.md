@@ -69,6 +69,8 @@ cd ~/文件/平衡球PID教案/Camera_Vision
 - **綠色圓**：HSV 偵測到的球外框；紅點是影像圓心。
 - **橘色 `CONTACT` 點**：推估的球與平台接觸點；程式實際傳送給 Nano、檢查是否在邊框內的就是這個點。
 
+RUN 時若同時出現多個符合 HSV 的區域，優先選擇最接近上一個有效球心的候選，減少背景突然取代球的情況；這不是身分保證，遮擋或相近顏色仍可能誤判。候選不會因位於邊框外而被刪除，偵測到的接觸點越界仍立即停機。READY 時仍以最大候選供校正和啟動檢查。
+
 球有高度，斜拍時綠色圓心不在平台平面。程式以 `camera_config.json` 的 `detection.contact_offset_radius` 乘球半徑，再沿 `contact_direction_px` 指定的影像方向推估接觸點；方向向量只取方向，影像右方為 X 正、下方為 Y 正。未設定有效方向時，沿平台遠端中點到近端中點方向補償。
 
 目前設定為比例 `0.98`、方向 `[0.014, 1.0]`：依固定攝影機畫面中球心約 `(335, 193)`、半徑約 52 像素及黃色參考標記中心約 `(336, 244)` 估算，只是單一位置的初始校正，尚未經實機複核。這些座標是截圖的像素位置，僅用來說明推導，不是平台控制座標。綠色圓是 HSV 區域的最小外接圓，不是平台接觸點的標準答案；不要只為了讓橘點落在綠線上而調整。
@@ -118,6 +120,11 @@ cd ~/文件/平衡球PID教案/Camera_Vision
 
 - READY 中不會送 `POS`、`LOST` 或 Servo 控制；按 `P` 可隨時回 READY。
 - Nano 連續約 300 ms 沒收到新位置或收到 `LOST`，會回中立角。
+- 正式韌體更新並重新燒錄後，停止時終端會顯示 `NANO STOP_REASON,BALL`（球未辨識或超出範圍）、`LOST`（Nano 接收逾時）或 `RANGE`（Nano 拒絕範圍外座標）等原因；Nano 重開機或 USB 已中斷時可能沒有原因訊息。
+- RUN 中若暫時未偵測到球，Camera Vision 等待約 80 ms；期間不重送舊座標，Servo 維持先前指令。若球仍未出現，傳送 `LOST` 並顯示 `VISION LOST reason=NO_DETECTION`。實際時間還受影格間隔影響；Nano 的約 300 ms 位置逾時保護仍獨立運作。
+- 若辨識出的 CONTACT 座標超出校正邊框，立即傳送 `LOST` 並顯示 `VISION LOST reason=OUTSIDE position=(X,Y)%`；幾何座標無效則顯示 `INVALID_GEOMETRY`。停機後仍須排除問題並按 `R` 重新啟動。
+- OUTSIDE 停機後，程式另外輸出當幀球心、半徑及 CONTACT 像素座標，並將該幀含標記畫面存成 `vision_last_outside.png`，方便查看是否抓到球以外的紅色區域。每次 OUTSIDE 會覆寫這個本機檔案；儲存影像發生在送出 `LOST` 之後，並不延遲停機命令。
+- 接收程式會等待完整換行才解析 Nano 資料；`POS,OK` 仍用於握手，但不再逐筆刷在終端機。
 - `Cannot RUN: Nano is not connected`：按 `n` 搜尋，檢查 USB、權限與 Serial Monitor。
 - `Cannot RUN: HSV candidate is outside...`：目前辨識到的候選接觸點不在 C 的平台內。重新做 B / C，或檢查橘色 CONTACT 點補償。
 - `ERROR,POSITION_OUT_OF_RANGE`：Nano 拒絕範圍外的位置；確認使用最新版 Camera Vision，並檢查 B、C 和橘色 CONTACT 點。

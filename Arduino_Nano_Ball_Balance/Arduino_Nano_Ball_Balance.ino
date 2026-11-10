@@ -13,6 +13,7 @@
  *
  * POS replies with POS,OK after the Nano accepts a fresh in-range sample.
  * RUN must be immediately preceded by a fresh accepted POS; READY stops PID and returns servos to neutral.
+ * When RUN stops: STOP_REASON,<BALL|LOST|RANGE|GEOM|OK|WAIT> before STATE,READY.
  * Nano telemetry (10 Hz):
  *   TEL,<state>,<link>,<x_pct>,<y_pct>,<e_x_pct>,<e_y_pct>,<u_x_pct>,<u_y_pct>,<tilt_x_deg>,<tilt_y_deg>,<servo_x>,<servo_y>,<age_ms>
  *
@@ -37,21 +38,31 @@ constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
 constexpr int SERVO_X_CENTER = 77;
 // Y 軸水平中心角度；校正完成後從 SETC / SHOW / 學習單轉填。
 constexpr int SERVO_Y_CENTER = 87;
-// Servo 實體安全行程，也是 normalized PID 輸出 100% 時的最大安全機構要求。
-// 調整 OFFSET 即可改每軸中心 ±安全端點，不需要手算端點；不要使用實體硬停點。
-constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
-constexpr int SERVO_X_MIN_ANGLE = SERVO_X_CENTER - SERVO_LIMIT_OFFSET_DEG;
-constexpr int SERVO_X_MAX_ANGLE = SERVO_X_CENTER + SERVO_LIMIT_OFFSET_DEG;
-constexpr int SERVO_Y_MIN_ANGLE = SERVO_Y_CENTER - SERVO_LIMIT_OFFSET_DEG;
-constexpr int SERVO_Y_MAX_ANGLE = SERVO_Y_CENTER + SERVO_LIMIT_OFFSET_DEG;
+// X、Y 的 Servo 角度減少／增加兩側可分別校正。
+// 這裡的增加／減少指 Servo 命令角度，不直接代表平台哪一側上升。
+// 預設仍為 ±20 度，端點必須經機構實測，不可使用實體硬停點。
+constexpr int SERVO_X_DECREASE_OFFSET_DEG = 20; // X Servo 最小角度 = 中心 - 此值
+constexpr int SERVO_X_INCREASE_OFFSET_DEG = 20; // X Servo 最大角度 = 中心 + 此值
+constexpr int SERVO_Y_DECREASE_OFFSET_DEG = 20; // Y Servo 最小角度 = 中心 - 此值
+constexpr int SERVO_Y_INCREASE_OFFSET_DEG = 20; // Y Servo 最大角度 = 中心 + 此值
+constexpr int SERVO_X_MIN_ANGLE = SERVO_X_CENTER - SERVO_X_DECREASE_OFFSET_DEG;
+constexpr int SERVO_X_MAX_ANGLE = SERVO_X_CENTER + SERVO_X_INCREASE_OFFSET_DEG;
+constexpr int SERVO_Y_MIN_ANGLE = SERVO_Y_CENTER - SERVO_Y_DECREASE_OFFSET_DEG;
+constexpr int SERVO_Y_MAX_ANGLE = SERVO_Y_CENTER + SERVO_Y_INCREASE_OFFSET_DEG;
+static_assert(SERVO_X_DECREASE_OFFSET_DEG > 0 && SERVO_X_INCREASE_OFFSET_DEG > 0,
+              "X servo offsets must be positive");
+static_assert(SERVO_X_MIN_ANGLE >= 0 && SERVO_X_MAX_ANGLE <= 180,
+              "X servo endpoints must stay within 0..180 degrees");
+static_assert(SERVO_Y_DECREASE_OFFSET_DEG > 0 && SERVO_Y_INCREASE_OFFSET_DEG > 0,
+              "Y servo offsets must be positive");
+static_assert(SERVO_Y_MIN_ANGLE >= 0 && SERVO_Y_MAX_ANGLE <= 180,
+              "Y servo endpoints must stay within 0..180 degrees");
 // ===== 學生校正參數結束 =====
 
 // 修正方向錯誤時，先停止 RUN，將對應軸的值從 1 改為 -1 或從 -1 改為 1，再重新燒錄。
 constexpr int SERVO_X_DIRECTION = -1;
 constexpr int SERVO_Y_DIRECTION = -1;
 
-constexpr float MAX_PLATFORM_TILT_X_DEG = SERVO_LIMIT_OFFSET_DEG;
-constexpr float MAX_PLATFORM_TILT_Y_DEG = SERVO_LIMIT_OFFSET_DEG;
 constexpr float PID_INTEGRAL_LIMIT = 1.0f;
 constexpr uint32_t POSITION_TIMEOUT_MS = 300UL;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100UL;
@@ -62,7 +73,8 @@ constexpr float POSITION_RANGE_EPSILON_PCT = 0.50f;
 // Nano firmware is the single source of truth for PID constants. Camera Vision
 // sends only vision/control-state commands and must not override these values.
 // PID runs in normalized space: Kp=1.0 means a full-scale position error
-// requests 100% of MAX_PLATFORM_TILT_*_DEG; Kp=0.5 would request 50%.
+// requests 100% of the configured offset on the commanded servo side;
+// Kp=0.5 would request 50%.
 // Initial PD tune for a ball that carries outward momentum near an edge.
 // Higher Kp starts the return tilt earlier; small Kd adds speed-proportional
 // braking. Keep Ki at zero: it cannot brake a moving ball and can add overshoot.
@@ -71,7 +83,8 @@ constexpr float DEFAULT_KI_X = 0.00f;
 constexpr float DEFAULT_KD_X = 0.5f;
 constexpr float DEFAULT_KP_Y = 1.25f;
 constexpr float DEFAULT_KI_Y = 0.00f;
-constexpr float DEFAULT_KD_Y = 0.5f;
+// Trial: modestly increase Y velocity response; compare with the previous 0.50.
+constexpr float DEFAULT_KD_Y = 0.60f;
 // ===== PID 參數結束 =====
 
 enum ControllerState : uint8_t { WAIT_LINK, READY, RUN };
@@ -198,6 +211,8 @@ void stopControl(LinkState reason) {
   resetControllers();
   writeNeutralServos();
   if (wasRunning) {
+    Serial.print(F("STOP_REASON,"));
+    Serial.println(linkStateName(reason));
     Serial.println(F("STATE,READY"));
   }
 }
@@ -311,6 +326,13 @@ void updateServos() {
   }
 }
 
+float servoOffsetForOutput(float output, int direction, float decreaseOffset, float increaseOffset) {
+  // Choose by commanded servo direction, not ball position: derivative action
+  // can reverse the output even while the ball stays on the same side.
+  const float sideOffset = output * direction >= 0.0f ? increaseOffset : decreaseOffset;
+  return output * sideOffset;
+}
+
 void updatePidForPosition() {
   if (!newPositionAvailable || controllerState != RUN) {
     return;
@@ -325,8 +347,10 @@ void updatePidForPosition() {
   errorNormY = normalizedPositionError(targetY, ballY, positionMinY, positionMaxY);
   outputNormX = pidX.update(errorNormX, dtSeconds);
   outputNormY = pidY.update(errorNormY, dtSeconds);
-  requestedTiltX = outputNormX * MAX_PLATFORM_TILT_X_DEG;
-  requestedTiltY = outputNormY * MAX_PLATFORM_TILT_Y_DEG;
+  requestedTiltX = servoOffsetForOutput(outputNormX, SERVO_X_DIRECTION,
+                                       SERVO_X_DECREASE_OFFSET_DEG, SERVO_X_INCREASE_OFFSET_DEG);
+  requestedTiltY = servoOffsetForOutput(outputNormY, SERVO_Y_DIRECTION,
+                                       SERVO_Y_DECREASE_OFFSET_DEG, SERVO_Y_INCREASE_OFFSET_DEG);
   updateServos();
 }
 

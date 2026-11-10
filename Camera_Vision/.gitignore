@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 camera_vision.log
+vision_last_outside.png

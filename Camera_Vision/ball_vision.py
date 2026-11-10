@@ -25,6 +25,9 @@ from serial.tools import list_ports
 CONTROL_AUTHORITY_LABEL = "PID SOURCE: Nano firmware only"
 PLATFORM_HALF_SPAN_PCT = 100.0
 PLATFORM_FULL_SPAN_PCT = PLATFORM_HALF_SPAN_PCT * 2.0
+MAX_NANO_LINE_BYTES = 512
+MAX_NANO_READ_BYTES = 4096
+MISSING_BALL_GRACE_SECONDS = 0.08
 WINDOW_NAME = "Ball vision"
 
 
@@ -245,6 +248,8 @@ class NanoTransport:
         self.last_terminal_controller_state: str | None = None
         self.joystick_target: tuple[float, float, bool] | None = None
         self.last_joystick_armed: bool | None = None
+        self._rx_buffer = bytearray()
+        self._rx_discarding_line = False
         if disabled:
             print("No Nano selected. READY setup is active; press n to search for Nano later.")
         elif port:
@@ -290,6 +295,8 @@ class NanoTransport:
         try:
             connection = serial.Serial(port, baudrate=self.baudrate, timeout=0, write_timeout=0.2)
             self.connection = connection
+            self._rx_buffer.clear()
+            self._rx_discarding_line = False
             time.sleep(2.0)  # A classic Nano normally resets when USB serial opens.
             self.send("READY")
             self.send("PING")
@@ -353,6 +360,8 @@ class NanoTransport:
             return
         try:
             self.connection.reset_input_buffer()
+            self._rx_buffer.clear()
+            self._rx_discarding_line = False
         except (OSError, serial.SerialException) as error:
             self.last_telemetry = f"Nano link lost: {error}"
             print(f"NANO READ ERROR: {error}. Press n to reconnect.")
@@ -363,8 +372,31 @@ class NanoTransport:
         if self.connection is None:
             return events
         try:
-            while self.connection.in_waiting:
-                line = self.connection.readline().decode("ascii", errors="replace").strip()
+            waiting = min(self.connection.in_waiting, MAX_NANO_READ_BYTES)
+            if not waiting:
+                return events
+            received = self.connection.read(waiting)
+            lines: list[bytes | None] = []
+            for value in received:
+                if self._rx_discarding_line:
+                    if value == 10:
+                        self._rx_discarding_line = False
+                elif value == 10:
+                    lines.append(bytes(self._rx_buffer))
+                    self._rx_buffer.clear()
+                elif len(self._rx_buffer) < MAX_NANO_LINE_BYTES:
+                    self._rx_buffer.append(value)
+                else:
+                    self._rx_buffer.clear()
+                    self._rx_discarding_line = True
+                    lines.append(None)
+            for raw_line in lines:
+                if raw_line is None:
+                    self.last_telemetry = "ERROR,SERIAL_LINE_TOO_LONG"
+                    print("NANO ERROR: serial line too long; discarded until newline.")
+                    events.append("ERROR,SERIAL_LINE_TOO_LONG")
+                    continue
+                line = raw_line.decode("ascii", errors="replace").strip()
                 if not line:
                     continue
                 # New: TEL,state,link,ballX,ballY,eXPct,eYPct,uXPct,uYPct,tiltXDeg,tiltYDeg,servoX,servoY,ageMs
@@ -416,7 +448,8 @@ class NanoTransport:
                     self.last_telemetry = line
                     if line.startswith(("ERROR,", "STATE,", "POS,OK", "GEOM,OK")):
                         events.append(line)
-                    print(f"NANO {line}")
+                    if line != "POS,OK":  # Keep ACKs for the state machine, without flooding the terminal.
+                        print(f"NANO {line}")
         except (OSError, serial.SerialException) as error:
             self.last_telemetry = f"Nano link lost: {error}"
             print(f"NANO READ ERROR: {error}. Press n to reconnect.")
@@ -437,6 +470,8 @@ class NanoTransport:
             self.connection = None
             self.joystick_target = None
             self.last_joystick_armed = None
+            self._rx_buffer.clear()
+            self._rx_discarding_line = False
 
 
 class BallVision:
@@ -452,6 +487,7 @@ class BallVision:
         self.corner_order_message: str | None = None
         self.corner_success_message: str | None = None
         self.filtered_position: np.ndarray | None = None
+        self.last_valid_ball_center: tuple[float, float] | None = None
         self.zero_reference = np.array([0.0, 0.0], dtype=np.float32)
         self.latest_frame: np.ndarray | None = None
         self.cross_check_marker: tuple[float, float] | None = None
@@ -466,7 +502,8 @@ class BallVision:
         self.run_start_events_seen = 0
         self.run_start_last_event: str | None = None
         self.last_sent_at = 0.0
-        self.last_lost_at = 0.0
+        self.last_lost_at: float | None = None
+        self.missing_ball_since: float | None = None
         self.latest_position: tuple[float, float] | None = None
         self.last_outside_platform_position: tuple[float, float] | None = None
         self.last_frame_at = time.monotonic()
@@ -680,7 +717,17 @@ class BallVision:
                 candidates.append((cv2.contourArea(contour), (center_x, center_y), radius))
         if not candidates:
             return None
-        _, center, radius = max(candidates, key=lambda item: item[0])
+        if self.pid_running and self.last_valid_ball_center is not None:
+            # Associate candidates with the last ball seen on the platform.
+            # Do not remove out-of-platform candidates: a real ball crossing
+            # the boundary must still be detected and stop control.
+            previous_x, previous_y = self.last_valid_ball_center
+            _, center, radius = min(
+                candidates,
+                key=lambda item: (item[1][0] - previous_x) ** 2 + (item[1][1] - previous_y) ** 2,
+            )
+        else:
+            _, center, radius = max(candidates, key=lambda item: item[0])
         return center, radius
 
     def _ball_contact_point(self, center: tuple[float, float], radius: float) -> tuple[float, float]:
@@ -718,20 +765,65 @@ class BallVision:
             self.last_sent_at = time.monotonic()
         return sent
 
-    def _send_position(self, position: tuple[float, float] | None) -> None:
+    def _send_position(
+        self,
+        position: tuple[float, float] | None,
+        loss_reason: str = "NO_DETECTION",
+        outside_position: tuple[float, float] | None = None,
+    ) -> bool:
         # Calibration may run while connected, but no live position commands are
         # sent until r explicitly starts PID control.
         if not self.pid_running:
-            return
+            return False
         now = time.monotonic()
-        transport_settings = self.config["transport"]
         if position is None:
-            interval = 1.0 / float(transport_settings["lost_heartbeat_hz"])
-            if now - self.last_lost_at >= interval:
-                self.transport.send("LOST")
-                self.last_lost_at = now
-            return
+            if loss_reason == "NO_DETECTION":
+                if self.missing_ball_since is None:
+                    self.missing_ball_since = now
+                if now - self.missing_ball_since < MISSING_BALL_GRACE_SECONDS:
+                    # Do not resend an old position while the ball is missing.
+                    # Nano's independent position watchdog remains active.
+                    return False
+            else:
+                self.missing_ball_since = None
+            interval = 1.0 / float(self.config["transport"]["lost_heartbeat_hz"])
+            if self.last_lost_at is None or now - self.last_lost_at >= interval:
+                if self.transport.send("LOST"):
+                    self.last_lost_at = now
+                    detail = ""
+                    if outside_position is not None:
+                        detail = f" position=({outside_position[0]:.2f},{outside_position[1]:.2f})%"
+                    print(f"VISION LOST reason={loss_reason}{detail}; sent LOST to Nano")
+                    return True
+            return False
+        self.missing_ball_since = None
+        self.last_lost_at = None
         self._send_position_command(position)
+        return False
+
+    def _save_outside_frame(
+        self, frame: np.ndarray, ball: tuple[tuple[float, float], float],
+        contact: tuple[float, float], position: tuple[float, float],
+    ) -> None:
+        """Keep the actual frame that triggered LOST, after sending the stop."""
+        center, radius = ball
+        print(
+            f"VISION OUTSIDE detail: center_px=({center[0]:.1f},{center[1]:.1f}) "
+            f"radius_px={radius:.1f} contact_px=({contact[0]:.1f},{contact[1]:.1f})"
+        )
+        output_path = self.config_path.parent / "vision_last_outside.png"
+        try:
+            annotated = self._draw_overlay(frame, ball, None)
+            text = f"OUTSIDE: X={position[0]:.1f}% Y={position[1]:.1f}%"
+            cv2.putText(annotated, text, (10, max(20, annotated.shape[0] - 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
+            if not cv2.imwrite(str(output_path), annotated):
+                print(f"VISION OUTSIDE: could not save frame to {output_path}")
+                return
+        except (OSError, ValueError, cv2.error) as error:
+            print(f"VISION OUTSIDE: could not save frame: {error}")
+            return
+        print(f"VISION OUTSIDE frame saved: {output_path}")
 
     def _safe_ready(self, message: str) -> None:
         was_active = self.pid_running or self.run_start_phase is not None
@@ -743,7 +835,8 @@ class BallVision:
         self.run_start_last_event = None
         self.filtered_position = None
         self.last_sent_at = 0.0
-        self.last_lost_at = 0.0
+        self.last_lost_at = None
+        self.missing_ball_since = None
         self.transport.send("READY")
         if was_active:
             print(message)
@@ -866,7 +959,8 @@ class BallVision:
                     self.pid_running = True
                     self.run_start_phase = None
                     self.last_sent_at = 0.0
-                    self.last_lost_at = 0.0
+                    self.last_lost_at = None
+                    self.missing_ball_since = None
                     print("RUN confirmed by Nano. Python is now sending fresh POS every camera frame.")
                     continue
                 if nano_event.startswith("ERROR,"):
@@ -1164,6 +1258,7 @@ class BallVision:
                 ball = self._detect_ball(frame)
                 contact_point = self._ball_contact_point(*ball) if ball else None
                 position = self._platform_position(contact_point) if contact_point else None
+                loss_reason = "NO_DETECTION" if ball is None else "INVALID_GEOMETRY"
                 if position is not None and self.zero_reference is not None:
                     position = (
                         position[0] - float(self.zero_reference[0]),
@@ -1171,9 +1266,13 @@ class BallVision:
                     )
                 if not self._position_is_inside_platform(position):
                     self.last_outside_platform_position = position
+                    if position is not None:
+                        loss_reason = "OUTSIDE" if all(math.isfinite(value) for value in position) else "INVALID_GEOMETRY"
                     position = None
                 else:
                     self.last_outside_platform_position = None
+                    if ball is not None:
+                        self.last_valid_ball_center = ball[0]
                     sample = np.array(position, dtype=np.float32)
                     alpha = float(self.config["detection"]["filter_alpha"])
                     self.filtered_position = sample if self.filtered_position is None else alpha * sample + (1 - alpha) * self.filtered_position
@@ -1181,7 +1280,10 @@ class BallVision:
                 if position is None:
                     self.filtered_position = None
                 self.latest_position = position
-                self._send_position(position)
+                lost_sent = self._send_position(position, loss_reason, self.last_outside_platform_position)
+                if (lost_sent and loss_reason == "OUTSIDE" and ball is not None
+                        and contact_point is not None and self.last_outside_platform_position is not None):
+                    self._save_outside_frame(frame, ball, contact_point, self.last_outside_platform_position)
                 if self.pid_running or self.run_start_phase is not None:
                     self._handle_nano_events()
                 if not self.headless:

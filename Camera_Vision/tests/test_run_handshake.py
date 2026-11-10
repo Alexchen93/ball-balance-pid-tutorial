@@ -43,7 +43,8 @@ def make_vision():
     vision.zero_reference = np.array([30.0, -20.0], dtype=np.float32)
     vision.filtered_position = None
     vision.last_sent_at = 0.0
-    vision.last_lost_at = 0.0
+    vision.last_lost_at = None
+    vision.missing_ball_since = None
     return vision, transport
 
 

@@ -1,4 +1,7 @@
 import io
+import os
+import pty
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -39,6 +42,8 @@ class NanoTransportSerialTest(unittest.TestCase):
         transport.baudrate = 115200
         transport.last_telemetry = ""
         transport.last_terminal_controller_state = None
+        transport._rx_buffer = bytearray()
+        transport._rx_discarding_line = False
         return transport
 
     def test_connect_closes_existing_connection_before_opening_new_port(self):
@@ -67,10 +72,12 @@ class NanoTransportSerialTest(unittest.TestCase):
 
             @property
             def in_waiting(self):
-                return len(self.lines)
+                return sum(map(len, self.lines))
 
-            def readline(self):
-                return self.lines.pop(0)
+            def read(self, size):
+                data = b"".join(self.lines)
+                self.lines = [data[size:]] if len(data) > size else []
+                return data[:size]
 
         transport = self.make_transport()
         transport.connection = BufferedConnection()
@@ -85,10 +92,12 @@ class NanoTransportSerialTest(unittest.TestCase):
 
             @property
             def in_waiting(self):
-                return len(self.lines)
+                return sum(map(len, self.lines))
 
-            def readline(self):
-                return self.lines.pop(0)
+            def read(self, size):
+                data = b"".join(self.lines)
+                self.lines = [data[size:]] if len(data) > size else []
+                return data[:size]
 
         transport = self.make_transport()
         transport.connection = BufferedConnection()
@@ -96,6 +105,108 @@ class NanoTransportSerialTest(unittest.TestCase):
             events = transport.poll()
         self.assertEqual(events, ["GEOM,OK"])
         self.assertEqual(transport.joystick_target, (12.5, -8.0, True))
+
+    def test_partial_serial_line_is_not_dispatched_until_newline(self):
+        class ChunkConnection:
+            def __init__(self):
+                self.chunks = [b"STATE,REA"]
+
+            @property
+            def in_waiting(self):
+                return len(self.chunks[0]) if self.chunks else 0
+
+            def readline(self):
+                return self.chunks.pop(0)
+
+            def read(self, size):
+                return self.chunks.pop(0)
+
+        transport = self.make_transport()
+        connection = ChunkConnection()
+        transport.connection = connection
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(transport.poll(), [])
+            connection.chunks.append(b"DY\nPOS,OK\n")
+            self.assertEqual(transport.poll(), ["STATE,READY", "POS,OK"])
+
+    def test_oversized_line_is_discarded_until_newline_and_reports_error(self):
+        class ChunkConnection:
+            def __init__(self):
+                self.data = b"X" * 513
+
+            @property
+            def in_waiting(self):
+                return len(self.data)
+
+            def read(self, size):
+                data, self.data = self.data[:size], self.data[size:]
+                return data
+
+        transport = self.make_transport()
+        connection = ChunkConnection()
+        transport.connection = connection
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(transport.poll(), ["ERROR,SERIAL_LINE_TOO_LONG"])
+            connection.data = b"STATE,READY\nGEOM,OK\n"
+            self.assertEqual(transport.poll(), ["GEOM,OK"])
+
+    def test_discard_pending_input_also_discards_partial_line(self):
+        class ChunkConnection:
+            def __init__(self):
+                self.data = b"STATE,REA"
+            @property
+            def in_waiting(self):
+                return len(self.data)
+            def read(self, size):
+                data, self.data = self.data[:size], self.data[size:]
+                return data
+            def reset_input_buffer(self):
+                self.data = b""
+
+        transport = self.make_transport()
+        connection = ChunkConnection()
+        transport.connection = connection
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(transport.poll(), [])
+            transport.discard_pending_input()
+            connection.data = b"DY\nGEOM,OK\n"
+            self.assertEqual(transport.poll(), ["GEOM,OK"])
+
+    def test_pos_ack_is_forwarded_without_flooding_terminal(self):
+        class ChunkConnection:
+            in_waiting = 7
+            def read(self, size):
+                self.in_waiting = 0
+                return b"POS,OK\n"
+        transport = self.make_transport()
+        transport.connection = ChunkConnection()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(transport.poll(), ["POS,OK"])
+        self.assertEqual(out.getvalue(), "")
+
+    def test_nonblocking_pyserial_waits_for_complete_line_through_pty(self):
+        master, slave = pty.openpty()
+        transport = self.make_transport()
+        try:
+            transport.connection = serial.Serial(os.ttyname(slave), baudrate=115200, timeout=0)
+            def send_and_wait(data):
+                os.write(master, data)
+                deadline = time.monotonic() + 1.0
+                while not transport.connection.in_waiting and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                self.assertGreater(transport.connection.in_waiting, 0)
+
+            with redirect_stdout(io.StringIO()):
+                send_and_wait(b"STATE,REA")
+                self.assertEqual(transport.poll(), [])
+                send_and_wait(b"DY\r\n")
+                self.assertEqual(transport.poll(), ["STATE,READY"])
+        finally:
+            if transport.connection is not None:
+                transport.close(send_ready=False)
+            os.close(slave)
+            os.close(master)
 
     def test_busy_connect_error_reports_holder_details(self):
         transport = self.make_transport()
