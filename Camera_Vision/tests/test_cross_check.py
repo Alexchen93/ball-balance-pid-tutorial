@@ -92,10 +92,12 @@ class CrossCheckTest(unittest.TestCase):
         vision.transport = type("Transport", (), {"is_connected": True, "joystick_target": None})()
         vision.config["ball_hsv"] = dict(hue=0, hue_tolerance=10, saturation_min=20, value_min=20)
         vision.config["detection"] = {"contact_offset_radius": .85}
-        with patch("ball_vision.cv2.putText", wraps=cv2.putText) as put_text:
-            vision._draw_overlay(self.make_frame(), ((200, 180), 20), (0, 0))
-        labels = [call.args[1] for call in put_text.call_args_list]
-        self.assertEqual(set(labels), {"STATE: READY | NANO: OPEN"})
+        from ball_vision import _draw_status
+        with patch("ball_vision._draw_status", wraps=_draw_status) as draw_status:
+            original = self.make_frame()
+            result = vision._draw_overlay(original, ((200, 180), 20), (0, 0))
+        self.assertEqual(draw_status.call_args.args[1:], (3, True))
+        self.assertTrue(np.any(result[:32] != original[:32]))
 
 
 if __name__ == "__main__":

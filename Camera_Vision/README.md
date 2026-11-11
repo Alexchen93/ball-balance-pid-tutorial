@@ -2,7 +2,25 @@
 
 `ball_vision.py` 在 Desktop 取得 USB 攝影機畫面，以 HSV 追蹤球，將平台座標送到 Arduino Nano。Nano 才負責 PID、Servo 方向、限幅與失聯保護。
 
-## Desktop 一次性設定
+## Windows 啟動方式
+
+現有的 `start_camera_vision.sh` 是 Linux 專用，不能直接在 Windows 執行。將更新後的整個 `Camera_Vision` 資料夾複製到 Windows 電腦，然後在檔案總管**雙擊 `start_camera_vision.bat`**。不要複製 Linux 的 `.venv` 或另一台電腦的 `.venv-win`。
+
+首次使用需已安裝 Windows 版 Python 3.10、3.11 或 3.12，並連接網路。啟動器會自動建立 `.venv-win` 並安裝必要套件；可能需要幾分鐘。若尚未安裝 Python，視窗會提示安裝，安裝後再雙擊一次。之後雙擊即可直接啟動。
+
+程式會使用 `camera_config.json` 中的 `camera.index`（預設 0），並自動搜尋 Nano；沒有 Nano 仍可進入 READY 畫面。如果開到錯的鏡頭，關閉程式並將 `camera_config.json` 的 `camera.index` 改為其他編號，例如 `1`，再雙擊啟動。程式啟動失敗時會保留錯誤訊息，方便檢查。
+
+若有多個 COM 埠，可用 Windows 裝置管理員確認 Nano 的 COM 編號，然後手動啟動（將 `COM3` 及 index 換成實際值）：
+
+```powershell
+.\.venv-win\Scripts\python.exe ball_vision.py --camera-index 0 --serial-port COM3
+```
+
+沒有畫面時，先用 Windows「相機」程式確認鏡頭可用，再關閉它及其他使用鏡頭的程式；檢查 Windows 的攝影機隱私權設定允許桌面應用程式存取。若 Nano 連不上，也請關閉 Arduino Serial Monitor，並檢查 COM 埠與驅動程式。若仍失敗，請提供終端機完整錯誤訊息，以及是在 PowerShell、命令提示字元、Git Bash 或 WSL 執行。
+
+> Linux 與 Windows 的攝影機位置、解析度及 index 可能不同；更換電腦或鏡頭後，請在 READY 重新執行 B、C 校正並檢查接觸點，再使用 RUN。
+
+## Linux Desktop 一次性設定
 
 ```bash
 cd ~/文件/平衡球PID教案/Camera_Vision
@@ -26,7 +44,7 @@ sudo usermod -aG dialout "$USER"
 
 Arduino IDE Serial Monitor、其他 serial monitor 或另一個 Camera Vision 視窗都可能佔用 port；啟動前要關閉它們。
 
-## 啟動方式
+## Linux 啟動方式
 
 ```bash
 cd ~/文件/平衡球PID教案/Camera_Vision
@@ -116,19 +134,19 @@ RUN 時若同時出現多個符合 HSV 的區域，優先選擇最接近上一�
 
 十字線只能提供輔助：手繪位置、線條彎曲、背景或遮擋都可能讓偵測結果不準；即使檢查結果在門檻內，也不能保證四角都正確。程式不會自動改動四角、控制原點、CONTACT 或 PID；四角不正確時仍由使用者按 `C` 重做校正。每次檢查只分析取樣時的畫面，不會連續追蹤，平台或攝影機移動後要重新檢查。
 
-攝影機視窗只有一行 `STATE: … | NANO: …`，其餘操作與結果看終端機。`NANO: OPEN` 表示序列埠已開啟，不等於持續收到 Nano 心跳；連線或控制錯誤會在終端機報告。綠圈、紅色球心、橘色接觸點、青色邊框與藍色十字是圖形標記。
+攝影機視窗上方以繁體中文顯示狀態與 Nano 連線情況，其餘操作與結果看終端機。「Nano：已連接」表示序列埠已開啟，不等於持續收到 Nano 心跳；連線或控制錯誤會在終端機報告。綠圈、紅色球心、橘色接觸點、青色邊框與藍色十字是圖形標記。`status_zh_tw.png` 為畫面中的中文字樣，複製程式時須一起保留。
 
 ## 安全與故障排除
 
 - READY 中不會送 `POS`、`LOST` 或 Servo 控制；按 `P` 可隨時回 READY。
 - Nano 連續約 300 ms 沒收到新位置或收到 `LOST`，會回中立角。
 - 正式韌體更新並重新燒錄後，停止時終端會顯示 `NANO STOP_REASON,BALL`（球未辨識或超出範圍）、`LOST`（Nano 接收逾時）或 `RANGE`（Nano 拒絕範圍外座標）等原因；Nano 重開機或 USB 已中斷時可能沒有原因訊息。
-- RUN 中若暫時未偵測到球，Camera Vision 等待約 80 ms；期間不重送舊座標，Servo 維持先前指令。若球仍未出現，傳送 `LOST` 並顯示 `VISION LOST reason=NO_DETECTION`。實際時間還受影格間隔影響；Nano 的約 300 ms 位置逾時保護仍獨立運作。
-- 若辨識出的 CONTACT 座標超出校正邊框，立即傳送 `LOST` 並顯示 `VISION LOST reason=OUTSIDE position=(X,Y)%`；幾何座標無效則顯示 `INVALID_GEOMETRY`。停機後仍須排除問題並按 `R` 重新啟動。
+- RUN 中若暫時未偵測到球，Camera Vision 等待約 80 ms；期間不重送舊座標，Servo 維持先前指令。若球仍未出現，傳送 `LOST` 並顯示「未偵測到球（NO_DETECTION）」。實際時間還受影格間隔影響；Nano 的約 300 ms 位置逾時保護仍獨立運作。
+- 若辨識出的 CONTACT 座標超出校正邊框，立即傳送 `LOST` 並顯示「超出平台邊界（OUTSIDE）」及位置；幾何座標無效則顯示「平台幾何資料無效（INVALID_GEOMETRY）」。停機後仍須排除問題並按 `R` 重新啟動。
 - OUTSIDE 停機後，程式另外輸出當幀球心、半徑及 CONTACT 像素座標，並將該幀含標記畫面存成 `vision_last_outside.png`，方便查看是否抓到球以外的紅色區域。每次 OUTSIDE 會覆寫這個本機檔案；儲存影像發生在送出 `LOST` 之後，並不延遲停機命令。
 - 接收程式會等待完整換行才解析 Nano 資料；`POS,OK` 仍用於握手，但不再逐筆刷在終端機。
-- `Cannot RUN: Nano is not connected`：按 `n` 搜尋，檢查 USB、權限與 Serial Monitor。
-- `Cannot RUN: HSV candidate is outside...`：目前辨識到的候選接觸點不在 C 的平台內。重新做 B / C，或檢查橘色 CONTACT 點補償。
+- 「無法啟動 RUN：Nano 尚未連線」：按 `n` 搜尋，檢查 USB、權限與 Serial Monitor。
+- 「HSV 偵測位置超出校正後的平台」：目前辨識到的候選接觸點不在 C 的平台內。重新做 B / C，或檢查橘色 CONTACT 點補償。
 - `ERROR,POSITION_OUT_OF_RANGE`：Nano 拒絕範圍外的位置；確認使用最新版 Camera Vision，並檢查 B、C 和橘色 CONTACT 點。
 - 若球被推向更遠方向，立即按 `P`，再調整 Nano 的 `SERVO_X_DIRECTION` 或 `SERVO_Y_DIRECTION`；Camera Vision 不設定 PID。
 

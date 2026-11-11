@@ -31,7 +31,7 @@ class PlatformCornerGeometryTest(unittest.TestCase):
     def test_sample_tl_bl_br_tr_is_rejected_with_swapped_points(self):
         self.assert_rejected(
             [(194, 82), (76, 251), (602, 266), (484, 92)],
-            "point 2 is BL but should be TR; point 4 is TR but should be BL",
+            "第 2 點為 BL，應為 TR; 第 4 點為 TR，應為 BL",
         )
 
     def test_already_correct_order_is_kept(self):
@@ -43,25 +43,25 @@ class PlatformCornerGeometryTest(unittest.TestCase):
     def test_duplicate_click_is_rejected(self):
         self.assert_rejected(
             [(100, 100), (100, 100), (500, 300), (80, 280)],
-            "duplicate",
+            "重複",
         )
 
     def test_degenerate_collinear_points_are_rejected(self):
         self.assert_rejected(
             [(100, 100), (200, 100), (300, 100), (400, 100)],
-            "degenerate",
+            "退化",
         )
 
     def test_concave_or_interior_point_is_rejected(self):
         self.assert_rejected(
             [(100, 100), (500, 100), (300, 160), (100, 300)],
-            "concave",
+            "凹形",
         )
 
     def test_cross_like_uncertain_diamond_is_rejected(self):
         self.assert_rejected(
             [(300, 80), (520, 240), (300, 400), (80, 240)],
-            "not geometrically clear",
+            "無法明確判斷",
         )
 
 
