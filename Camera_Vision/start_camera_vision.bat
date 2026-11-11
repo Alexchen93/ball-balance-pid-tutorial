@@ -73,7 +73,6 @@ echo Installing required packages. This may take a few minutes.
 if errorlevel 1 (
   echo Package installation failed. Check your internet connection.
   echo Details: .venv-win\install.log
-  echo Details about package installation are in .venv-win\install.log.
   goto error_exit
 )
 "%PYTHON%" -c "import cv2, numpy, serial" >nul 2>&1
@@ -83,8 +82,13 @@ if errorlevel 1 (
 )
 
 :start_app
-echo Starting Camera Vision and searching for Arduino Nano.
-echo The READY setup screen can open without a Nano connection.
+if not "%~1"=="" goto direct_app
+echo Starting camera and Nano selection.
+"%PYTHON%" "%~dp0windows_launcher.py"
+if errorlevel 1 goto error_exit
+exit /b 0
+
+:direct_app
 "%PYTHON%" "%~dp0ball_vision.py" %*
 if errorlevel 1 goto error_exit
 exit /b 0

@@ -311,7 +311,7 @@ class NanoTransport:
             if self.connection is None:
                 return False
             self.last_telemetry = f"Nano connected: {port}"
-            print(f"Nano connected: {port} @ {self.baudrate}")
+            print(f"Serial port open: {port} @ {self.baudrate}. Waiting for Nano PONG; an open port alone does not confirm Nano.")
             return True
         except (OSError, serial.SerialException) as error:
             self.connection = None
@@ -456,7 +456,9 @@ class NanoTransport:
                     self.last_telemetry = line
                     if line.startswith(("ERROR,", "STATE,", "POS,OK", "GEOM,OK")):
                         events.append(line)
-                    if line != "POS,OK":  # Keep ACKs for the state machine, without flooding the terminal.
+                    if line == "PONG":
+                        print("Nano replied to PING (PONG). Nano communication is confirmed.")
+                    elif line != "POS,OK":  # Keep ACKs for the state machine, without flooding the terminal.
                         print(f"NANO {line}")
         except (OSError, serial.SerialException) as error:
             self.last_telemetry = f"Nano link lost: {error}"
@@ -1302,8 +1304,9 @@ class BallVision:
                 if (lost_sent and loss_reason == "OUTSIDE" and ball is not None
                         and contact_point is not None and self.last_outside_platform_position is not None):
                     self._save_outside_frame(frame, ball, contact_point, self.last_outside_platform_position)
-                if self.pid_running or self.run_start_phase is not None:
-                    self._handle_nano_events()
+                # Read Nano responses in READY too, so the initial PONG confirms
+                # communication without opening/resetting the serial port twice.
+                self._handle_nano_events()
                 if not self.headless:
                     cv2.imshow(WINDOW_NAME, self._draw_overlay(frame, ball, position))
                     if not self.handle_key(cv2.waitKey(1) & 0xFF):

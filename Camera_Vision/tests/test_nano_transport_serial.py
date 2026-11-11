@@ -46,6 +46,17 @@ class NanoTransportSerialTest(unittest.TestCase):
         transport._rx_discarding_line = False
         return transport
 
+    def test_pong_confirms_nano_response(self):
+        transport = self.make_transport()
+        connection = unittest.mock.MagicMock()
+        connection.in_waiting = 5
+        connection.read.return_value = b"PONG\n"
+        transport.connection = connection
+        output = io.StringIO()
+        with redirect_stdout(output):
+            transport.poll()
+        self.assertIn("Nano replied to PING (PONG)", output.getvalue())
+
     def test_connect_closes_existing_connection_before_opening_new_port(self):
         transport = self.make_transport()
         old_connection = ExistingConnection()

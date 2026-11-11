@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cv2
+import numpy as np
 
 from ball_vision import BallVision, NanoTransport
 
@@ -11,7 +12,7 @@ from ball_vision import BallVision, NanoTransport
 class WindowsSupportTest(unittest.TestCase):
     def test_windows_launcher_and_program_use_ascii_text(self):
         folder = Path(__file__).resolve().parents[1]
-        for name in ("start_camera_vision.bat", "install_python_windows.ps1", "ball_vision.py"):
+        for name in ("start_camera_vision.bat", "install_python_windows.ps1", "windows_launcher.py", "ball_vision.py"):
             with self.subTest(name=name):
                 (folder / name).read_bytes().decode("ascii")
 
@@ -59,6 +60,25 @@ class WindowsSupportTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 BallVision.__new__(BallVision).run(1, 640, 480, 30, 1)
         open_camera.assert_called_once_with(1, cv2.CAP_DSHOW)
+
+    def test_ready_loop_reads_nano_responses(self):
+        vision = BallVision.__new__(BallVision)
+        vision.headless = True
+        vision.last_frame_at = 0.0
+        vision.fps = 0.0
+        vision.pid_running = False
+        vision.run_start_phase = None
+        vision.zero_reference = None
+        vision.transport = MagicMock()
+        vision.transport.poll.return_value = []
+        vision._detect_ball = MagicMock(return_value=None)
+        capture = MagicMock()
+        capture.isOpened.return_value = True
+        capture.read.return_value = (True, np.zeros((8, 8, 3), dtype=np.uint8))
+        with patch("ball_vision.cv2.VideoCapture", return_value=capture):
+            vision.run(0, 8, 8, 30, 1)
+        vision.transport.poll.assert_called_once()
+        capture.release.assert_called_once()
 
 
 if __name__ == "__main__":

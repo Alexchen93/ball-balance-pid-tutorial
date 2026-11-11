@@ -10,7 +10,9 @@
 
 自動下載或安裝失敗時，請檢查網路、資料夾寫入權限和畫面的英文錯誤；Python 安裝紀錄為 `python-install.log`，套件安裝紀錄為 `.venv-win/install.log`。執行環境不可從另一台電腦直接複製，若誤複製導致無法執行，請先關閉程式並移除該電腦的 `.venv-win`、`.python-win`，再重新雙擊安裝。
 
-程式會使用 `camera_config.json` 中的 `camera.index`（預設 0），並自動搜尋 Nano；沒有 Nano 仍可進入 READY 畫面。如果開到錯的鏡頭，關閉程式並將 `camera_config.json` 的 `camera.index` 改為其他編號，例如 `1`，再雙擊啟動。程式啟動失敗時會保留錯誤訊息，方便檢查。
+環境檢查完成後，啟動器會測試攝影機 index 0–9，列出可讀取影格的鏡頭。輸入清單編號後會開啟即時預覽：**先點一下預覽視窗**，按 `Y` 確認使用、`N` 返回重選，或 `Q` 離開。搜尋結果可按 `R` 重新整理，也可按 `M` 手動輸入其他 index。預覽以畫面確認攝影機身分，編號不一定與 Windows 裝置管理員的順序相同。
+
+選好鏡頭後，選 `1` 搜尋 Nano 並選擇 COM 埠，或選 `2` 不連接 Nano 開啟 READY 設定。若找不到序列埠，可插上 Nano 後按 `R` 重試；有多個埠時依裝置資訊選擇。清單上的 COM 埠只是偵測到的序列裝置，並不保證是 Nano。開啟後的 `Serial port open` 只表示埠成功開啟；終端機顯示 `Nano replied to PING (PONG)` 才代表 Nano 已回應。連線失敗時請關閉 Arduino Serial Monitor，並在 READY 按 `n` 重試。程式啟動失敗時會保留錯誤訊息。
 
 若有多個 COM 埠，可用 Windows 裝置管理員確認 Nano 的 COM 編號，然後手動啟動（將 `COM3` 及 index 換成實際值）：
 
