@@ -30,10 +30,17 @@ try {
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
         throw 'The Python archive did not contain python.exe.'
     }
-    & $python -c 'import ensurepip, venv; print("Python runtime is ready.")'
+    # Use separate arguments without embedded quotes: Windows PowerShell 5.1
+    # can strip nested quotes when passing -c code to a native executable.
+    & $python -m ensurepip --version
     if ($LASTEXITCODE -ne 0) {
-        throw 'The extracted Python runtime could not be started.'
+        throw 'The extracted Python runtime cannot run ensurepip.'
     }
+    & $python -m venv --help > $null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The extracted Python runtime cannot run venv.'
+    }
+    Write-Host 'Python runtime is ready.'
     if (Test-Path -LiteralPath $target) {
         throw 'The Python runtime folder appeared during setup. Close other launchers and retry.'
     }

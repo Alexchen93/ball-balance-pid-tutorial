@@ -1,4 +1,6 @@
 import unittest
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -24,6 +26,16 @@ class WindowsSupportTest(unittest.TestCase):
         self.assertIn(expected, installer)
         self.assertLess(installer.index("Get-FileHash"), installer.index("Expand-Archive"))
         self.assertIn("$actualSha256 -ne $expectedSha256", installer)
+
+    def test_runtime_checks_avoid_nested_windows_command_quoting(self):
+        installer = (Path(__file__).resolve().parents[1] / "install_python_windows.ps1").read_text(encoding="ascii")
+        self.assertIn("& $python -m ensurepip --version", installer)
+        self.assertIn("& $python -m venv --help", installer)
+        self.assertNotIn("& $python -c", installer)
+        for args in (("-m", "ensurepip", "--version"), ("-m", "venv", "--help")):
+            with self.subTest(args=args):
+                result = subprocess.run([sys.executable, *args], capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_search_lists_com_ports_without_filesystem_permission_check(self):
         ports = [
