@@ -16,13 +16,13 @@ class WindowsSupportTest(unittest.TestCase):
             with self.subTest(name=name):
                 (folder / name).read_bytes().decode("ascii")
 
-    def test_python_installer_is_checked_before_execution(self):
+    def test_python_runtime_is_checked_before_extraction(self):
         folder = Path(__file__).resolve().parents[1]
         installer = (folder / "install_python_windows.ps1").read_text(encoding="ascii")
-        expected = "5da012101ba2e17113a9a1cd901e9ce1441086f2b7ecb5de06ec94163899a190"
-        self.assertIn("https://www.python.org/ftp/python/3.13.17/python-3.13.17-amd64.exe", installer)
+        expected = "b26ca4b4ee51e157836049934d2b8eabd55939be296f3130254251b6df96ec2f"
+        self.assertIn("https://www.python.org/ftp/python/3.13.17/python-3.13.17-amd64.zip", installer)
         self.assertIn(expected, installer)
-        self.assertLess(installer.index("Get-FileHash"), installer.index("Start-Process"))
+        self.assertLess(installer.index("Get-FileHash"), installer.index("Expand-Archive"))
         self.assertIn("$actualSha256 -ne $expectedSha256", installer)
 
     def test_search_lists_com_ports_without_filesystem_permission_check(self):

@@ -8,7 +8,8 @@ echo First run: preparing the Python environment for Windows.
 echo An internet connection is required to install the packages.
 echo.
 
-if exist "%~dp0.python-win\python.exe" goto create_local_environment
+if exist "%~dp0.python-runtime-3.13.17\python.exe" goto create_local_environment
+if exist "%~dp0.python-win\python.exe" goto create_old_local_environment
 py -3.12 -c "import sys" >nul 2>&1
 if not errorlevel 1 (
   set "PYTHON_LAUNCHER=py -3.12"
@@ -35,19 +36,29 @@ if not errorlevel 1 (
   goto create_environment
 )
 
-echo Python was not found. Downloading and installing Python automatically.
+echo Python was not found. Downloading the official Python runtime automatically.
 echo This can take several minutes. Please keep this window open.
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0install_python_windows.ps1"
 if errorlevel 1 goto error_exit
-if not exist "%~dp0.python-win\python.exe" (
-  echo Python installation did not create the expected executable.
+if not exist "%~dp0.python-runtime-3.13.17\python.exe" (
+  echo Python setup did not create the expected executable.
   goto error_exit
 )
 
 :create_local_environment
-"%~dp0.python-win\python.exe" -m venv "%~dp0.venv-win"
+"%~dp0.python-runtime-3.13.17\python.exe" -m venv "%~dp0.venv-win"
 if errorlevel 1 (
   echo Failed to create the Python environment. See the error above.
+  echo If the runtime was copied from another PC, remove .python-runtime-3.13.17 and retry.
+  goto error_exit
+)
+goto check_environment
+
+:create_old_local_environment
+"%~dp0.python-win\python.exe" -m venv "%~dp0.venv-win"
+if errorlevel 1 (
+  echo Failed to create an environment from the older .python-win folder.
+  echo If it was copied from another PC, rename or remove it and retry.
   goto error_exit
 )
 goto check_environment

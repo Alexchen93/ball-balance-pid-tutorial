@@ -1,60 +1,53 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# Python.org's Windows x64 installer and the SHA-256 published on its release page.
-$url = 'https://www.python.org/ftp/python/3.13.17/python-3.13.17-amd64.exe'
-$expectedSha256 = '5da012101ba2e17113a9a1cd901e9ce1441086f2b7ecb5de06ec94163899a190'
-$target = Join-Path $PSScriptRoot '.python-win'
-$python = Join-Path $target 'python.exe'
-$installLog = Join-Path $PSScriptRoot 'python-install.log'
-$installer = Join-Path $env:TEMP ('camera-vision-python-' + [guid]::NewGuid().ToString('N') + '.exe')
+# Full Windows runtime and SHA-256 from Python.org's 3.13.17 release manifest.
+$url = 'https://www.python.org/ftp/python/3.13.17/python-3.13.17-amd64.zip'
+$expectedSha256 = 'b26ca4b4ee51e157836049934d2b8eabd55939be296f3130254251b6df96ec2f'
+$target = Join-Path $PSScriptRoot '.python-runtime-3.13.17'
+$nonce = [guid]::NewGuid().ToString('N')
+$archive = Join-Path $env:TEMP ('camera-vision-python-' + $nonce + '.zip')
+$staging = Join-Path $PSScriptRoot ('.python-runtime-setup-' + $nonce)
 
 try {
     if (-not [Environment]::Is64BitOperatingSystem) {
-        throw 'Automatic installation requires a 64-bit version of Windows.'
+        throw 'Automatic setup requires a 64-bit version of Windows.'
+    }
+    if (Test-Path -LiteralPath $target) {
+        throw 'The Python runtime folder already exists but is incomplete. Rename or remove .python-runtime-3.13.17 and retry.'
     }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Write-Host 'Downloading Python from python.org...'
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $installer
-    Write-Host 'Checking the downloaded installer...'
-    $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+    Write-Host 'Downloading the Python runtime from python.org...'
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
+    Write-Host 'Checking the downloaded runtime...'
+    $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
     if ($actualSha256 -ne $expectedSha256) {
-        throw 'Downloaded Python installer failed its SHA-256 check. It was not run.'
+        throw 'Downloaded Python archive failed its SHA-256 check. It was not extracted.'
     }
-    Write-Host 'Installing Python for this user. This may take several minutes...'
-    $installerArguments = @(
-        '/quiet',
-        'InstallAllUsers=0',
-        ('TargetDir="{0}"' -f $target),
-        'Include_launcher=0',
-        'Include_pip=1',
-        'Include_test=0',
-        'Include_doc=0',
-        'Include_tcltk=0',
-        'Shortcuts=0',
-        'PrependPath=0',
-        'AppendPath=0',
-        '/log',
-        ('"{0}"' -f $installLog)
-    )
-    $process = Start-Process -FilePath $installer -ArgumentList $installerArguments -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw "Python installer failed with exit code $($process.ExitCode). Check python-install.log."
-    }
+    Write-Host 'Extracting Python locally. This may take a few minutes...'
+    Expand-Archive -LiteralPath $archive -DestinationPath $staging
+    $python = Join-Path $staging 'python.exe'
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        throw 'Python was not installed in the expected folder. Check python-install.log.'
+        throw 'The Python archive did not contain python.exe.'
     }
-    & $python --version
+    & $python -c 'import ensurepip, venv; print("Python runtime is ready.")'
     if ($LASTEXITCODE -ne 0) {
-        throw 'The installed Python executable could not be started.'
+        throw 'The extracted Python runtime could not be started.'
     }
-    Write-Host 'Python installation completed.'
+    if (Test-Path -LiteralPath $target) {
+        throw 'The Python runtime folder appeared during setup. Close other launchers and retry.'
+    }
+    Move-Item -LiteralPath $staging -Destination $target
+    Write-Host 'Python runtime setup completed.'
     exit 0
 }
 catch {
-    Write-Host ("Automatic Python installation failed: " + $_.Exception.Message)
+    Write-Host ("Automatic Python setup failed: " + $_.Exception.Message)
     exit 1
 }
 finally {
-    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $staging) {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

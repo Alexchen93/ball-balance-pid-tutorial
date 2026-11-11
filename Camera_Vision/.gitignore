@@ -1,6 +1,8 @@
 .venv/
 .venv-win/
 .python-win/
+.python-runtime-3.13.17/
+.python-runtime-setup-*/
 python-install.log
 __pycache__/
 *.pyc

@@ -4,11 +4,11 @@
 
 ## Windows 啟動方式
 
-現有的 `start_camera_vision.sh` 是 Linux 專用，不能直接在 Windows 執行。將更新後的整個 `Camera_Vision` 資料夾複製到 Windows 電腦，然後在檔案總管**雙擊 `start_camera_vision.bat`**。請先解壓縮；不要複製 Linux 的 `.venv` 或另一台電腦的 `.venv-win`、`.python-win`。
+現有的 `start_camera_vision.sh` 是 Linux 專用，不能直接在 Windows 執行。將更新後的整個 `Camera_Vision` 資料夾複製到 Windows 電腦，然後在檔案總管**雙擊 `start_camera_vision.bat`**。請先解壓縮；不要複製 Linux 的 `.venv` 或另一台電腦的 `.venv-win`、`.python-win`、`.python-runtime-3.13.17`。
 
-首次啟動需連接網路。如果找不到可用的 Python，啟動器會從 Python 官方網站下載 Windows 64 位元安裝程式、核對 SHA-256，並在目前使用者的 `Camera_Vision/.python-win` 安裝 Python 3.13.17；接著建立 `.venv-win` 並安裝套件。整個過程可能需要幾分鐘，請保持視窗開啟。Python 安裝不會加入系統 PATH；Windows 仍可能顯示安全提示或受到學校電腦的安裝政策限制。如果已找到 Python 3.10 以上，啟動器會使用現有版本。以後雙擊即可啟動。
+首次啟動需連接網路。如果找不到可用的 Python，啟動器會從 Python 官方網站下載完整的 Windows 64 位元 Python 3.13.17 執行環境、核對 SHA-256 並解壓縮至 `.python-runtime-3.13.17`；接著建立 `.venv-win` 並安裝套件。這個方式不需要執行 Python 安裝程式，也不會修改系統 PATH。整個過程可能需要幾分鐘，請保持視窗開啟；學校電腦仍可能限制下載或執行。如果已找到 Python 3.10 以上，啟動器會使用現有版本。以後雙擊即可啟動。
 
-自動下載或安裝失敗時，請檢查網路、資料夾寫入權限和畫面的英文錯誤；Python 安裝紀錄為 `python-install.log`，套件安裝紀錄為 `.venv-win/install.log`。執行環境不可從另一台電腦直接複製，若誤複製導致無法執行，請先關閉程式並移除該電腦的 `.venv-win`、`.python-win`，再重新雙擊安裝。
+自動下載或設定失敗時，請檢查網路、資料夾寫入權限和畫面的英文錯誤；套件安裝紀錄為 `.venv-win/install.log`。執行環境不可從另一台電腦直接複製，若誤複製導致無法執行，請先關閉程式並移除該電腦的 `.venv-win`、`.python-win`、`.python-runtime-3.13.17`，再重新雙擊設定。
 
 環境檢查完成後，啟動器會測試攝影機 index 0–9，列出可讀取影格的鏡頭。輸入清單編號後會開啟即時預覽：**先點一下預覽視窗**，按 `Y` 確認使用、`N` 返回重選，或 `Q` 離開。搜尋結果可按 `R` 重新整理，也可按 `M` 手動輸入其他 index。預覽以畫面確認攝影機身分，編號不一定與 Windows 裝置管理員的順序相同。
 
