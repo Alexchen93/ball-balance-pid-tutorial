@@ -222,8 +222,8 @@ class NanoTransportSerialTest(unittest.TestCase):
             self.assertFalse(transport._connect("/dev/ttyUSB0"))
 
         text = output.getvalue()
-        self.assertIn("Nano 連線錯誤（/dev/ttyUSB0）", text)
-        self.assertIn("Nano 埠忙碌：/dev/ttyUSB0 已被其他程式開啟", text)
+        self.assertIn("NANO CONNECT ERROR (/dev/ttyUSB0):", text)
+        self.assertIn("NANO BUSY DIAGNOSTIC: /dev/ttyUSB0 is already open", text)
         self.assertIn("PID 123 fd 7: serial-monitor /dev/ttyUSB0", text)
         self.assertIsNone(transport.connection)
 

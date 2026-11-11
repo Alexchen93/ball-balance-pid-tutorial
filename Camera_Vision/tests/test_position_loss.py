@@ -39,7 +39,7 @@ class PositionLossTest(unittest.TestCase):
             self.send_at(10.081, None)
             self.send_at(10.10, None)
         self.assertEqual(self.transport.sent, ["LOST"])
-        self.assertIn("未偵測到球（NO_DETECTION）", output.getvalue())
+        self.assertIn("reason=NO_DETECTION", output.getvalue())
 
     def test_outside_and_invalid_geometry_stop_immediately(self):
         for reason, position in [("OUTSIDE", (101.0, 53.4)), ("INVALID_GEOMETRY", None)]:
@@ -50,7 +50,7 @@ class PositionLossTest(unittest.TestCase):
                 with contextlib.redirect_stdout(output):
                     self.send_at(10.0, None, reason, position)
                 self.assertEqual(self.transport.sent, ["LOST"])
-                self.assertIn(reason, output.getvalue())
+                self.assertIn("reason=" + reason, output.getvalue())
                 if position:
                     self.assertIn("(101.00,53.40)%", output.getvalue())
 
@@ -80,7 +80,7 @@ class PositionLossTest(unittest.TestCase):
             saved = cv2.imread(str(Path(directory) / "vision_last_outside.png"))
             self.assertIsNotNone(saved)
             self.assertEqual(tuple(saved[60, 100]), (0, 165, 255))
-            self.assertIn("球心像素=(100.0,50.0)", output.getvalue())
+            self.assertIn("center_px=(100.0,50.0)", output.getvalue())
 
 
 if __name__ == "__main__":

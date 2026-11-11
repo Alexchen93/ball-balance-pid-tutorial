@@ -127,7 +127,7 @@ class RunHandshakeTest(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             vision._handle_nano_events()
 
-        self.assertIn("傳送 POS 後未收到 Nano 回應", output.getvalue())
+        self.assertIn("No Nano response was parsed after Python sent POS", output.getvalue())
         self.assertEqual(transport.sent, ["READY"])
         self.assertIsNone(vision.run_start_phase)
 
@@ -143,7 +143,7 @@ class RunHandshakeTest(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             vision._handle_nano_events()
 
-        self.assertIn("已收到 1 筆 Nano 事件；最後一筆為 'PONG'", output.getvalue())
+        self.assertIn("Python parsed 1 Nano event(s); last event was 'PONG'", output.getvalue())
         self.assertEqual(transport.sent, ["READY"])
         self.assertIsNone(vision.run_start_phase)
 

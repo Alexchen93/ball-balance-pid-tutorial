@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import errno
-from functools import lru_cache
 import glob
 import json
 import math
@@ -23,34 +22,13 @@ import serial
 from serial.tools import list_ports
 
 
+CONTROL_AUTHORITY_LABEL = "PID SOURCE: Nano firmware only"
 PLATFORM_HALF_SPAN_PCT = 100.0
 PLATFORM_FULL_SPAN_PCT = PLATFORM_HALF_SPAN_PCT * 2.0
 MAX_NANO_LINE_BYTES = 512
 MAX_NANO_READ_BYTES = 4096
 MISSING_BALL_GRACE_SECONDS = 0.08
-WINDOW_NAME = "平衡球影像辨識"
-
-
-@lru_cache(maxsize=1)
-def _status_sprites() -> np.ndarray:
-    """Load pre-rendered Traditional Chinese labels without a font dependency."""
-    path = Path(__file__).with_name("status_zh_tw.png")
-    data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
-    sprites = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
-    if sprites is None or sprites.ndim != 3 or sprites.shape[2] != 4 or sprites.shape[0] != 256:
-        raise RuntimeError("無法載入中文狀態圖示，請確認 status_zh_tw.png 存在且未損壞。")
-    return sprites
-
-
-def _draw_status(overlay: np.ndarray, state_index: int, connected: bool) -> None:
-    sprites = _status_sprites()
-    index = state_index * 2 + int(connected)
-    sprite = sprites[index * 32:(index + 1) * 32]
-    height = min(sprite.shape[0], overlay.shape[0])
-    width = min(sprite.shape[1], overlay.shape[1])
-    alpha = sprite[:height, :width, 3:4].astype(np.float32) / 255.0
-    target = overlay[:height, :width]
-    target[:] = (sprite[:height, :width, :3] * alpha + target * (1 - alpha)).astype(np.uint8)
+WINDOW_NAME = "Ball vision"
 
 
 @dataclass(frozen=True)
@@ -73,11 +51,11 @@ def load_config(path: Path) -> dict[str, Any]:
         config = json.load(config_file)
     if "pid" in config:
         config.pop("pid", None)
-        print("舊版設定：已忽略 camera_config.json 中的 pid；PID 參數由 Nano 韌體管理。")
+        print("DEPRECATED CONFIG: ignored camera_config.json 'pid'; PID parameters are managed only by Nano firmware.")
     control = config.setdefault("control", {})
     if "zero_reference_mm" in control and "zero_reference_pct" not in control:
         control.pop("zero_reference_mm", None)
-        print("舊版設定：已忽略 zero_reference_mm；零點固定為校正後的平台中心。")
+        print("DEPRECATED CONFIG: ignored zero_reference_mm; zero is now always the calibrated platform centre.")
     return config
 
 
@@ -106,25 +84,25 @@ def normalize_platform_corners(
 ) -> tuple[list[tuple[float, float]] | None, str | None]:
     """Validate and return platform corners only in TL, TR, BR, BL order."""
     if len(corners) != 4:
-        return None, "平台校正必須有四個角點，請按 C 重新校正。"
+        return None, "Platform calibration needs exactly four corner points. Press C to recalibrate."
     try:
         points = [(float(x), float(y)) for x, y in corners]
     except (TypeError, ValueError):
-        return None, "平台角點座標不是數字，請按 C 重新校正。"
+        return None, "Platform corner points are not numeric. Press C to recalibrate."
     if not all(math.isfinite(value) for point in points for value in point):
-        return None, "平台角點座標不是有限數值，請按 C 重新校正。"
+        return None, "Platform corner points contain non-finite values. Press C to recalibrate."
     for index, point in enumerate(points):
         for other in points[index + 1:]:
             distance_sq = (point[0] - other[0]) ** 2 + (point[1] - other[1]) ** 2
             if distance_sq <= 1.0:
-                return None, "平台角點重複或重疊，請按 C 重試。"
+                return None, "Platform corner points contain duplicate or overlapping clicks. Press C to retry."
 
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
     span_x = max(xs) - min(xs)
     span_y = max(ys) - min(ys)
     if span_x <= 5.0 or span_y <= 5.0:
-        return None, "平台角點形狀退化或範圍太小，請按 C 重試。"
+        return None, "Platform corner geometry is degenerate or too small. Press C to retry."
 
     center_x = sum(xs) / 4.0
     center_y = sum(ys) / 4.0
@@ -132,7 +110,7 @@ def normalize_platform_corners(
     area = _polygon_area(ordered)
     min_area = max(25.0, span_x * span_y * 0.05)
     if abs(area) < min_area:
-        return None, "平台角點形狀退化，面積太小，請按 C 重試。"
+        return None, "Platform corner geometry is degenerate; area is too small. Press C to retry."
     if area < 0:
         ordered.reverse()
 
@@ -142,7 +120,7 @@ def normalize_platform_corners(
     ]
     min_cross = max(10.0, span_x * span_y * 0.01)
     if any(abs(cross) < min_cross for cross in crosses) or not all(cross > 0 for cross in crosses):
-        return None, "平台角點形成凹形、交叉或接近共線，請按 C 重試。"
+        return None, "Platform corners are concave, crossed, or nearly collinear. Press C to retry."
 
     tolerance_x = max(3.0, span_x * 0.02)
     tolerance_y = max(3.0, span_y * 0.02)
@@ -158,25 +136,25 @@ def normalize_platform_corners(
         elif x < center_x - tolerance_x and y > center_y + tolerance_y:
             label = "BL"
         else:
-            return None, "無法明確判斷平台角點位置，請按 C 重試。"
+            return None, "Platform corner order is not geometrically clear enough. Press C to retry."
         if label in labels_by_point.values():
-            return None, "無法分別判斷左上、右上、右下與左下角點，請按 C 重試。"
+            return None, "Platform corners do not identify one clear TL/TR/BR/BL each. Press C to retry."
         labels_by_point[point] = label
     if set(labels_by_point.values()) != set(CORNER_LABELS_TLTRBRBL):
-        return None, "無法分別判斷左上、右上、右下與左下角點，請按 C 重試。"
+        return None, "Platform corners do not identify one clear TL/TR/BR/BL each. Press C to retry."
 
     clicked_labels = [labels_by_point[point] for point in points]
     if tuple(clicked_labels) != CORNER_LABELS_TLTRBRBL:
         mismatches = [
-            f"第 {index + 1} 點為 {actual}，應為 {expected}"
+            f"point {index + 1} is {actual} but should be {expected}"
             for index, (actual, expected) in enumerate(zip(clicked_labels, CORNER_LABELS_TLTRBRBL))
             if actual != expected
         ]
         return (
             None,
-            "平台角點須依左上、右上、右下、左下順序點選。"
+            "Platform corners must be clicked/stored TL -> TR -> BR -> BL. "
             + "; ".join(mismatches)
-            + "。請按 C 重試。",
+            + ". Press C to retry.",
         )
     return points, None
 
@@ -252,14 +230,14 @@ def is_serial_busy_error(error: BaseException) -> bool:
 
 
 def print_serial_busy_diagnostics(port: str) -> None:
-    print(f"Nano 埠忙碌：{port} 已被其他程式開啟。")
+    print(f"NANO BUSY DIAGNOSTIC: {port} is already open by another process.")
     holders = serial_port_holder_details(port)
     if holders:
         for holder in holders:
-            print(f"占用埠的程式：{holder}")
+            print(f"NANO BUSY HOLDER: {holder}")
     else:
         print(
-            "無法確認目前占用埠的程式。"
+            "NANO BUSY HOLDER: unable to identify the process using this port."
         )
 
 
@@ -267,14 +245,14 @@ class NanoTransport:
     def __init__(self, port: str | None, baudrate: int, disabled: bool) -> None:
         self.connection: serial.Serial | None = None
         self.baudrate = baudrate
-        self.last_telemetry = "未選擇序列埠；可進行 READY 設定。" if disabled else "Nano 未連線；按 n 搜尋。"
+        self.last_telemetry = "No serial selected; READY setup only" if disabled else "Nano disconnected; press n to search."
         self.last_terminal_controller_state: str | None = None
         self.joystick_target: tuple[float, float, bool] | None = None
         self.last_joystick_armed: bool | None = None
         self._rx_buffer = bytearray()
         self._rx_discarding_line = False
         if disabled:
-            print("未選擇 Nano，目前可進行 READY 設定；稍後可按 n 搜尋。")
+            print("No Nano selected. READY setup is active; press n to search for Nano later.")
         elif port:
             self._connect(port)
         else:
@@ -292,8 +270,7 @@ class NanoTransport:
             for port in list_ports.comports()
         }
         if sys.platform == "win32":
-            # Windows COM devices are not filesystem paths; opening the port is
-            # the reliable way to detect access errors or an occupied port.
+            # COM ports are not filesystem paths; opening the port checks access.
             visible_ports = sorted(metadata)
             likely_ports = [
                 device for device in visible_ports if any(marker in metadata[device] for marker in markers)
@@ -317,10 +294,10 @@ class NanoTransport:
             self.close(send_ready=False)
         if sys.platform != "win32" and not os.access(port, os.R_OK | os.W_OK):
             self.connection = None
-            self.last_telemetry = f"沒有 Nano 埠讀寫權限：{port}"
+            self.last_telemetry = f"Nano port permission blocked: {port}"
             print(
-                f"Nano 連線錯誤（{port}）：目前使用者沒有讀寫權限。"
-                "請檢查序列埠群組或 udev 規則，再重新插入 Nano。"
+                f"NANO CONNECT ERROR ({port}): current user cannot read/write this device. "
+                "Check serial group membership or udev rules, then replug Nano."
             )
             return False
         try:
@@ -333,45 +310,45 @@ class NanoTransport:
             self.send("PING")
             if self.connection is None:
                 return False
-            self.last_telemetry = f"Nano 已連線：{port}"
-            print(f"Nano 已連線：{port}，鮑率 {self.baudrate}。")
+            self.last_telemetry = f"Nano connected: {port}"
+            print(f"Nano connected: {port} @ {self.baudrate}")
             return True
         except (OSError, serial.SerialException) as error:
             self.connection = None
-            self.last_telemetry = f"Nano 連線失敗：{error}"
-            print(f"Nano 連線錯誤（{port}）：{error}")
+            self.last_telemetry = f"Nano connect failed: {error}"
+            print(f"NANO CONNECT ERROR ({port}): {error}")
             if is_serial_busy_error(error):
                 print_serial_busy_diagnostics(port)
             return False
 
     def search_and_connect(self) -> bool:
         if self.connection is not None:
-            print("Nano 已經連線。")
+            print("Nano is already connected.")
             return True
         visible_ports, likely_ports, blocked_ports = self._candidate_ports()
         if len(likely_ports) == 1:
-            print(f"搜尋 Nano：使用唯一符合的 USB 序列埠 {likely_ports[0]}。")
+            print(f"Searching Nano: using unique USB-serial candidate {likely_ports[0]}")
             return self._connect(likely_ports[0])
         if len(visible_ports) == 1:
-            print(f"搜尋 Nano：使用唯一可用的 USB 序列埠 {visible_ports[0]}。")
+            print(f"Searching Nano: using only usable USB-serial device {visible_ports[0]}")
             return self._connect(visible_ports[0])
         if not visible_ports:
             if blocked_ports:
-                self.last_telemetry = "找到 USB 序列埠，但沒有讀寫權限；修正後按 n。"
+                self.last_telemetry = "USB serial exists, but permission is blocked; press n after fixing it."
                 print(
-                    "搜尋 Nano：目前使用者無法讀寫以下 USB 序列埠："
+                    "NANO SEARCH: USB serial device exists but is not readable/writable by this user: "
                     + ", ".join(blocked_ports)
                 )
-                print("請修正序列埠群組或 udev 規則，重新插入 Nano，再按 n 重試。")
+                print("Fix serial group membership or udev rules, replug Nano, then press n to retry.")
             else:
-                self.last_telemetry = "找不到 USB 序列埠；按 n 重試。"
-                print("搜尋 Nano：找不到序列埠。請插入 Nano，再按 n 重試。")
+                self.last_telemetry = "No USB serial; press n to retry."
+                print("NANO SEARCH: no serial device found. Plug Nano in, then press n to retry.")
         else:
-            self.last_telemetry = "找到多個 USB 序列埠；選定後按 n。"
-            print(f"搜尋 Nano：找到多個可用序列埠：{', '.join(visible_ports)}")
+            self.last_telemetry = "Multiple USB serial devices; press n after selecting one."
+            print(f"NANO SEARCH: multiple usable candidates: {', '.join(visible_ports)}")
             if blocked_ports:
-                print(f"已略過沒有權限的裝置：{', '.join(blocked_ports)}")
-            print("請拔除其他 USB 序列裝置，再按 n 重試；也可用 --serial-port 手動指定。")
+                print(f"Ignored permission-blocked devices: {', '.join(blocked_ports)}")
+            print("Disconnect other USB serial devices, then press n to retry; use --serial-port only for manual override.")
         return False
 
     def send(self, line: str) -> bool:
@@ -381,8 +358,8 @@ class NanoTransport:
             self.connection.write((line + "\n").encode("ascii"))
             return True
         except (OSError, serial.SerialException, serial.SerialTimeoutException) as error:
-            self.last_telemetry = f"Nano 連線中斷：{error}"
-            print(f"Nano 寫入錯誤：{error}。伺服控制已安全停止；按 n 重新連線。")
+            self.last_telemetry = f"Nano link lost: {error}"
+            print(f"NANO WRITE ERROR: {error}. Servo control is safely stopped; press n to reconnect.")
             self.close(send_ready=False)
             return False
 
@@ -394,8 +371,8 @@ class NanoTransport:
             self._rx_buffer.clear()
             self._rx_discarding_line = False
         except (OSError, serial.SerialException) as error:
-            self.last_telemetry = f"Nano 連線中斷：{error}"
-            print(f"Nano 讀取錯誤：{error}。請按 n 重新連線。")
+            self.last_telemetry = f"Nano link lost: {error}"
+            print(f"NANO READ ERROR: {error}. Press n to reconnect.")
             self.close(send_ready=False)
 
     def poll(self) -> list[str]:
@@ -424,7 +401,7 @@ class NanoTransport:
             for raw_line in lines:
                 if raw_line is None:
                     self.last_telemetry = "ERROR,SERIAL_LINE_TOO_LONG"
-                    print("Nano 錯誤：序列資料行過長，已捨棄至換行。")
+                    print("NANO ERROR: serial line too long; discarded until newline.")
                     events.append("ERROR,SERIAL_LINE_TOO_LONG")
                     continue
                 line = raw_line.decode("ascii", errors="replace").strip()
@@ -440,7 +417,7 @@ class NanoTransport:
                             self.joystick_target = (x, y, parts[3] == "1")
                             armed = parts[3] == "1"
                             if armed != getattr(self, "last_joystick_armed", None):
-                                print("搖桿：已啟用。" if armed else "搖桿：請放回中立位置以啟用。")
+                                print("JOYSTICK: armed." if armed else "JOYSTICK: release to neutral to arm.")
                                 self.last_joystick_armed = armed
                     except ValueError:
                         pass
@@ -455,23 +432,23 @@ class NanoTransport:
                     if controller_state == "RUN" or controller_state != self.last_terminal_controller_state:
                         if len(parts) == 14:
                             detail = (
-                                f" 誤差=({parts[5]},{parts[6]})%"
-                                f" 輸出=({parts[7]},{parts[8]})%"
-                                f" 傾角=({parts[9]},{parts[10]})度"
-                                f" 伺服角度=X:{parts[11]}度 Y:{parts[12]}度"
-                                f" 位置資料時間差={parts[13]}毫秒"
+                                f" error=({parts[5]},{parts[6]})%"
+                                f" output=({parts[7]},{parts[8]})%"
+                                f" tilt=({parts[9]},{parts[10]})deg"
+                                f" angle=X:{parts[11]}deg Y:{parts[12]}deg"
+                                f" position_age={parts[13]}ms"
                             )
                         else:
                             detail = (
-                                f" 舊版誤差毫米=({parts[5]},{parts[6]})"
-                                f" 舊版傾角=({parts[7]},{parts[8]})度"
-                                f" 伺服角度=X:{parts[9]}度 Y:{parts[10]}度"
-                                f" 位置資料時間差={parts[11]}毫秒"
+                                f" legacy_error_mm=({parts[5]},{parts[6]})"
+                                f" legacy_tilt=({parts[7]},{parts[8]})deg"
+                                f" angle=X:{parts[9]}deg Y:{parts[10]}deg"
+                                f" position_age={parts[11]}ms"
                             )
                         print(
-                            "伺服狀態"
-                            f" 模式={controller_state} 連線={parts[2]}"
-                            f" 球位置=({parts[3]},{parts[4]})"
+                            "SERVO"
+                            f" state={controller_state} link={parts[2]}"
+                            f" ball=({parts[3]},{parts[4]})"
                             f"{detail}"
                         )
                     self.last_terminal_controller_state = controller_state
@@ -482,8 +459,8 @@ class NanoTransport:
                     if line != "POS,OK":  # Keep ACKs for the state machine, without flooding the terminal.
                         print(f"NANO {line}")
         except (OSError, serial.SerialException) as error:
-            self.last_telemetry = f"Nano 連線中斷：{error}"
-            print(f"Nano 讀取錯誤：{error}。請按 n 重新連線。")
+            self.last_telemetry = f"Nano link lost: {error}"
+            print(f"NANO READ ERROR: {error}. Press n to reconnect.")
             self.close(send_ready=False)
         return events
 
@@ -549,7 +526,7 @@ class BallVision:
         normalized, problem = normalize_platform_corners(self.corners)
         if problem is not None or normalized is None:
             self.homography = None
-            self.corner_order_message = f"儲存的平台角點設定無效：{problem}"
+            self.corner_order_message = f"Stored platform corner config rejected: {problem}"
             print(self.corner_order_message)
             return
         if normalized != self.corners:
@@ -560,10 +537,10 @@ class BallVision:
             control_config = self.config.setdefault("control", {})
             control_config.pop("zero_reference_pct", None)
             control_config.pop("zero_reference_mm", None)
-            self.corner_success_message = "平台四角已儲存，計算出的中心為零點。"
-            print("已依左上、右上、右下、左下儲存平台角點；中心為 X=0、Y=0。")
-            print(f"原順序：{old_corners}")
-            print(f"新順序：{self.corners}")
+            self.corner_success_message = "Platform corners saved as TL/TR/BR/BL; its calculated centre is zero."
+            print("Stored platform corners saved as TL/TR/BR/BL; its calculated centre is now X=0, Y=0.")
+            print(f"Old order: {old_corners}")
+            print(f"New order: {self.corners}")
             if persist_normalized:
                 save_config(self.config_path, self.config)
         source = np.float32(self.corners)
@@ -584,8 +561,8 @@ class BallVision:
 
     def _ready_items(self) -> dict[str, bool]:
         return {
-            "B 球體顏色 HSV": self._has_ball_hsv(),
-            "C 平台邊界（中心為零點）": self._has_platform(),
+            "B ball HSV": self._has_ball_hsv(),
+            "C platform border (centre = zero)": self._has_platform(),
         }
 
     def _ready_complete(self) -> bool:
@@ -593,23 +570,23 @@ class BallVision:
 
     def _ready_prompt(self) -> str:
         if self.mode == "ball_colour":
-            return "B：請點選球中心，擷取 HSV 顏色。"
+            return "B: click the ball centre to sample HSV only."
         if self.mode == "corners":
             next_index = min(len(self.pending_corners) + 1, 4)
-            return f"C：請依左上、右上、右下、左下順序點選第 {next_index}/4 個平台角點。"
+            return f"C: click platform corner {next_index}/4 in order TL -> TR -> BR -> BL."
         if self.corner_order_message is not None:
             return self.corner_order_message
         if self._ready_complete():
-            return "READY 設定完成。按 R 啟動；按 P 維持待命；按 B 或 C 重新校正。"
+            return "READY complete. Press R to start RUN; P stays READY; B/C recalibrate."
         if not self._has_ball_hsv():
-            return "下一步：按 B，再點選球中心以擷取 HSV 顏色。"
+            return "Next: press B, then click the ball centre for HSV."
         if not self._has_platform():
-            return "下一步：按 C，依左上、右上、右下、左下順序點選平台四角。"
-        return "C 校正完成後會自動計算平台中心。"
+            return "Next: press C, then click four platform corners in order TL -> TR -> BR -> BL."
+        return "Platform centre is calculated automatically after C."
 
     def _print_ready_checklist(self) -> None:
         states = " | ".join(f"{'[x]' if done else '[ ]'} {name}" for name, done in self._ready_items().items())
-        print(f"READY 準備清單：{states}")
+        print(f"READY checklist: {states}")
         if self.corner_order_message is not None:
             print(self.corner_order_message)
         print(self._ready_prompt())
@@ -625,8 +602,9 @@ class BallVision:
         if 0 <= x < frame_width and 0 <= y < frame_height:
             return float(x), float(y)
         print(
-            f"已忽略校正點 ({x}, {y})：點選位置超出攝影機畫面 "
-            f"{frame_width}x{frame_height}。請保持預覽原始大小，並點選畫面內的區域。"
+            f"Ignored calibration click ({x}, {y}): outside camera frame "
+            f"{frame_width}x{frame_height}. Keep the preview at its image size "
+            "and click inside the visible camera frame."
         )
         return None
 
@@ -644,7 +622,7 @@ class BallVision:
         self.filtered_position = None
         self.mode = "normal"
         self._rebuild_homography(persist_normalized=True)
-        print("已套用儲存的 camera_config.json。")
+        print("Saved camera_config.json applied.")
         self._print_ready_checklist()
 
     def _platform_position(self, point: tuple[float, float]) -> tuple[float, float] | None:
@@ -698,13 +676,13 @@ class BallVision:
     def _send_geometry_config(self) -> bool:
         geometry = self._platform_geometry()
         if geometry is None:
-            print("無法啟動 RUN：零點不在校正的平台邊界內，請按 C 重新校正。")
+            print("Cannot RUN: C/D calibration does not put zero inside the calibrated platform edges. Press C and D again.")
             return False
         if not self.transport.send(geometry.as_command()):
-            print("無法啟動 RUN：平台幾何資料傳送失敗。請按 n 重新連線，再按 R 重試。")
+            print("Cannot RUN: failed to send calibrated platform geometry to Nano. Press n to reconnect, then R again.")
             return False
         print(
-            "已傳送校正後的平台幾何資料至 Nano："
+            "Sent calibrated platform geometry to Nano: "
             f"X[{geometry.x_min_pct:+.1f},{geometry.x_max_pct:+.1f}]%, "
             f"Y[{geometry.y_min_pct:+.1f},{geometry.y_max_pct:+.1f}]%."
         )
@@ -831,9 +809,8 @@ class BallVision:
                     self.last_lost_at = now
                     detail = ""
                     if outside_position is not None:
-                        detail = f"，位置=({outside_position[0]:.2f},{outside_position[1]:.2f})%"
-                    explanation = {"NO_DETECTION": "未偵測到球", "OUTSIDE": "超出平台邊界", "INVALID_GEOMETRY": "平台幾何資料無效"}.get(loss_reason, "其他原因")
-                    print(f"影像追蹤中斷：{explanation}（{loss_reason}）{detail}；已傳送 LOST 至 Nano。")
+                        detail = f" position=({outside_position[0]:.2f},{outside_position[1]:.2f})%"
+                    print(f"VISION LOST reason={loss_reason}{detail}; sent LOST to Nano")
                     return True
             return False
         self.missing_ball_since = None
@@ -848,22 +825,22 @@ class BallVision:
         """Keep the actual frame that triggered LOST, after sending the stop."""
         center, radius = ball
         print(
-            f"追蹤點超出邊界：球心像素=({center[0]:.1f},{center[1]:.1f}) "
-            f"半徑像素={radius:.1f} 接觸點像素=({contact[0]:.1f},{contact[1]:.1f})"
+            f"VISION OUTSIDE detail: center_px=({center[0]:.1f},{center[1]:.1f}) "
+            f"radius_px={radius:.1f} contact_px=({contact[0]:.1f},{contact[1]:.1f})"
         )
         output_path = self.config_path.parent / "vision_last_outside.png"
         try:
             annotated = self._draw_overlay(frame, ball, None)
-            text = f"X={position[0]:.1f}% Y={position[1]:.1f}%"
+            text = f"OUTSIDE: X={position[0]:.1f}% Y={position[1]:.1f}%"
             cv2.putText(annotated, text, (10, max(20, annotated.shape[0] - 12)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
             if not cv2.imwrite(str(output_path), annotated):
-                print(f"無法將越界影格儲存至 {output_path}。")
+                print(f"VISION OUTSIDE: could not save frame to {output_path}")
                 return
         except (OSError, ValueError, cv2.error) as error:
-            print(f"無法儲存越界影格：{error}")
+            print(f"VISION OUTSIDE: could not save frame: {error}")
             return
-        print(f"已儲存越界影格：{output_path}")
+        print(f"VISION OUTSIDE frame saved: {output_path}")
 
     def _safe_ready(self, message: str) -> None:
         was_active = self.pid_running or self.run_start_phase is not None
@@ -881,7 +858,7 @@ class BallVision:
         if was_active:
             print(message)
         else:
-            print("目前已在 READY 待命；不會持續傳送位置或伺服控制指令。")
+            print("Already READY. P keeps Nano in READY; no POS/LOST/servo commands are being sent.")
 
     def _request_run(self, position: tuple[float, float]) -> None:
         self.transport.discard_pending_input()
@@ -893,15 +870,15 @@ class BallVision:
         self.run_start_events_seen = 0
         self.run_start_last_event = None
         self.run_start_deadline = time.monotonic() + 0.6
-        print("已要求啟動 RUN：等待 Nano 回覆 GEOM,OK，之後才會傳送位置與啟動指令。")
+        print("RUN requested: waiting for Nano GEOM,OK before the fresh POS/RUN gate.")
 
     def _send_initial_pos_after_geometry(self) -> None:
         position = self.latest_position
         if position is None:
-            self._safe_ready("已取消 RUN：Nano 接受幾何資料前失去球的位置。請讓球入鏡，再按 R。")
+            self._safe_ready("RUN cancelled: ball was lost before Nano accepted geometry. Keep it visible, then press R again.")
             return
         if not self._send_position_command(position):
-            self._safe_ready("已取消 RUN：幾何資料確認後無法傳送新位置。請按 n 重新連線，再按 R。")
+            self._safe_ready("RUN cancelled: failed to send fresh POS after geometry ACK. Press n to reconnect, then R again.")
             return
         self.run_start_phase = "wait_pos_ack"
         self.run_start_ack_position = position
@@ -909,7 +886,7 @@ class BallVision:
         self.run_start_events_seen = 0
         self.run_start_last_event = None
         self.run_start_deadline = self.run_start_pos_sent_at + 0.6
-        print("Nano 已接受平台幾何資料並傳送目前位置；確認後會再傳送最新位置與 RUN。")
+        print("Nano accepted calibrated geometry; sent fresh POS for this frame. POS,OK, matching TEL,READY,OK, or immediate STATE,READY will trigger a final POS immediately followed by RUN.")
 
     def _is_implicit_pos_ack(self, nano_event: str) -> bool:
         if self.run_start_ack_position is None:
@@ -941,10 +918,10 @@ class BallVision:
     def _send_final_pos_and_run(self, ack_label: str) -> None:
         position = self.latest_position
         if position is None:
-            self._safe_ready("已取消 RUN：收到 Nano 確認前失去球的位置。請讓球入鏡，再按 R。")
+            self._safe_ready("RUN cancelled: ball was lost before Nano ACK. Keep it visible, then press R again.")
             return
         if not self._send_position_command(position):
-            self._safe_ready("已取消 RUN：啟動前無法傳送最新位置。請按 n 重新連線，再按 R。")
+            self._safe_ready("RUN cancelled: failed to send final fresh POS immediately before RUN. Press n to reconnect, then R again.")
             return
         self.transport.send("RUN")
         self.run_start_phase = "wait_run_ack"
@@ -953,18 +930,21 @@ class BallVision:
         self.run_start_events_seen = 0
         self.run_start_last_event = None
         self.run_start_deadline = time.monotonic() + 0.6
-        print(f"Nano 已透過 {ack_label} 確認位置；已傳送最新位置及 RUN，等待 STATE,RUN。")
+        print(f"Nano accepted initial POS via {ack_label}; resent latest fresh POS immediately followed by RUN. Waiting for STATE,RUN.")
 
     def _run_handshake_timeout_detail(self) -> str:
         if self.run_start_events_seen == 0:
             if self.run_start_phase == "wait_geom_ack":
                 return (
-                    "傳送 GEOM 後未收到 Nano 回應。請燒錄最新版 Arduino Nano 韌體；舊版沒有安全的幾何資料相容機制。"
+                    "No Nano response was parsed after Python sent GEOM. Flash the current "
+                    "Arduino_Nano_Ball_Balance firmware; legacy firmware has no safe geometry fallback."
                 )
             return (
-                "傳送 POS 後未收到 Nano 回應。可能是韌體未確認 POS、開啟 USB 時 Nano 重置，或序列埠 RX 未收到資料。"
+                "No Nano response was parsed after Python sent POS. This usually means the flashed "
+                "firmware does not acknowledge POS, the Nano reset during USB open, or serial RX is not "
+                "reaching the sketch."
             )
-        return f"已收到 {self.run_start_events_seen} 筆 Nano 事件；最後一筆為 {self.run_start_last_event!r}。"
+        return f"Python parsed {self.run_start_events_seen} Nano event(s); last event was {self.run_start_last_event!r}."
 
     def _handle_nano_events(self) -> None:
         for nano_event in self.transport.poll():
@@ -976,20 +956,20 @@ class BallVision:
                     self._send_initial_pos_after_geometry()
                     continue
                 if nano_event.startswith("ERROR,"):
-                    self._safe_ready(f"Nano 已取消 RUN（{nano_event}）。若不支援 GEOM，請燒錄最新版 Nano 韌體。")
+                    self._safe_ready(f"RUN cancelled by Nano ({nano_event}). Upload the current formal Nano firmware if GEOM is unsupported.")
                     continue
             if self.run_start_phase == "wait_pos_ack":
                 if nano_event.startswith("POS,OK"):
                     self._send_final_pos_and_run("POS,OK")
                     continue
                 if self._is_implicit_pos_ack(nano_event):
-                    self._send_final_pos_and_run("TEL,READY,OK 相容模式")
+                    self._send_final_pos_and_run("TEL,READY,OK compatibility fallback")
                     continue
                 if self._is_ready_state_pos_ack(nano_event):
-                    self._send_final_pos_and_run("STATE,READY 相容模式")
+                    self._send_final_pos_and_run("STATE,READY compatibility fallback")
                     continue
                 if nano_event.startswith("ERROR,"):
-                    self._safe_ready(f"Nano 已取消 RUN（{nano_event}），並回到 READY 待命。")
+                    self._safe_ready(f"RUN cancelled by Nano ({nano_event}). Back to READY.")
                     continue
             if self.run_start_phase == "wait_run_ack":
                 if nano_event == "STATE,RUN":
@@ -998,20 +978,20 @@ class BallVision:
                     self.last_sent_at = 0.0
                     self.last_lost_at = None
                     self.missing_ball_since = None
-                    print("Nano 已確認 RUN；程式正隨每個影格傳送最新位置。")
+                    print("RUN confirmed by Nano. Python is now sending fresh POS every camera frame.")
                     continue
                 if nano_event.startswith("ERROR,"):
-                    self._safe_ready(f"Nano 已拒絕 RUN（{nano_event}），並回到 READY 待命。")
+                    self._safe_ready(f"RUN rejected by Nano ({nano_event}). Back to READY.")
                     continue
             if self.pid_running and (nano_event.startswith("ERROR,") or nano_event in ("STATE,READY", "TEL_STATE,READY")):
-                self._safe_ready(f"Nano 已停止 RUN（{nano_event}）並回到 READY；請排除問題後再按 R。")
+                self._safe_ready(f"RUN stopped by Nano ({nano_event}). Back to READY; fix the reported condition before pressing R again.")
                 break
         if self.run_start_phase is not None and time.monotonic() > self.run_start_deadline:
             phase = self.run_start_phase
             detail = self._run_handshake_timeout_detail()
             self.run_start_ack_position = None
             self.run_start_pos_sent_at = 0.0
-            self._safe_ready(f"啟動 RUN 時等待 Nano 回應逾時（{phase}）。{detail} 已回到 READY；請檢查序列埠 RX/TX 與 Nano 韌體，再按 R。")
+            self._safe_ready(f"RUN handshake timed out while waiting for Nano {phase}. {detail} Back to READY; check serial RX/TX and Nano firmware protocol before pressing R again.")
 
     def _check_platform_cross(self, frame: np.ndarray, sample: tuple[float, float]) -> tuple[tuple[float, float], float, float, float, float] | None:
         """Estimate a two-axis mark on one READY frame; never alter calibration."""
@@ -1032,7 +1012,7 @@ class BallVision:
             mask = ((hue_delta <= 10) & (hsv[:, :, 1] >= max(50, saturation - 80)) &
                     (hsv[:, :, 2] >= max(45, value - 110))).astype(np.uint8) * 255
         else:
-            print("十字線檢查：取樣太亮或有反光，請點選清楚的黑色線條。")
+            print("CROSS CHECK: Sample is too bright or reflective. Click a clear black line.")
             return None
         # Exclude extrapolated borders, where perspective fill or calibration edges can look like ink.
         mask[:3, :] = 0
@@ -1040,7 +1020,7 @@ class BallVision:
         mask[:, :3] = 0
         mask[:, -3:] = 0
         if cv2.countNonZero(mask) > mask.size * 0.30:
-            print("十字線檢查：黑色區域太多，可能混入背景或陰影，請改善背景及光線。")
+            print("CROSS CHECK: Too much dark area; improve background and lighting.")
             return None
         segments = cv2.HoughLinesP(mask, 1, np.pi / 180, threshold=45,
                                    minLineLength=90, maxLineGap=25)
@@ -1048,7 +1028,7 @@ class BallVision:
             return None
         sample_warp = cv2.perspectiveTransform(np.float32([[sample]]), warped_h)[0, 0]
         if not np.all(np.isfinite(sample_warp)) or not (3 <= sample_warp[0] <= 397 and 3 <= sample_warp[1] <= 397):
-            print("十字線檢查：請點選四角框內的黑色線條。")
+            print("CROSS CHECK: Click a black line inside the calibrated border.")
             return None
         horizontal, vertical = [], []
         for line in segments[:, 0, :]:
@@ -1123,15 +1103,18 @@ class BallVision:
                            cv2.MARKER_CROSS, 20, 2)
 
         if self.pid_running:
-            state_index = 0
+            state = "RUN"
         elif self.run_start_phase is not None:
-            state_index = 1
+            state = "STARTING"
         elif self.mode != "normal" or not self._ready_complete():
-            state_index = 2
+            state = "SETUP"
         else:
-            state_index = 3
+            state = "READY"
         # OPEN means the serial port is open; it is not a live Nano heartbeat.
-        _draw_status(overlay, state_index, self.transport.is_connected)
+        link = "OPEN" if self.transport.is_connected else "DISCONNECTED"
+        status = f"STATE: {state} | NANO: {link}"
+        cv2.putText(overlay, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+        cv2.putText(overlay, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         return overlay
 
     def _mouse_callback(self, event: int, x: int, y: int, _flags: int, _param: Any) -> None:
@@ -1146,17 +1129,17 @@ class BallVision:
             self.cross_check_marker = None
             result = self._check_platform_cross(self.latest_frame, (click_x, click_y))
             if result is None:
-                print("十字線檢查：無法可靠辨識兩條長線。請移開球、減少反光，按 X 後再點黑色線條。")
+                print("CROSS CHECK: Cannot reliably detect both lines. Remove the ball, reduce reflections, press X, then click a black line.")
             else:
                 self.cross_check_marker, dx, dy, h_angle, v_angle = result
                 self.cross_check_marker_until = time.monotonic() + 5.0
-                print(f"十字線檢查：交點相對四角中心 X={dx:+.1f}% 平台寬、Y={dy:+.1f}% 平台高（右與遠端為正）。")
-                print(f"十字線檢查：透視校正後兩軸偏轉角約 {h_angle:+.1f}°、{v_angle:+.1f}°；藍色十字顯示 5 秒。")
+                print(f"CROSS CHECK: Intersection relative to border centre: X={dx:+.1f}% width, Y={dy:+.1f}% height (right and far are positive).")
+                print(f"CROSS CHECK: Corrected axis angles: {h_angle:+.1f} and {v_angle:+.1f} degrees. Blue cross shown for 5 seconds.")
                 if abs(dx) > 5.0 or abs(dy) > 5.0 or abs(h_angle) > 8.0 or abs(v_angle) > 8.0:
-                    print("十字線檢查：中心差超過寬／高的 5% 或方向偏轉超過 8°；請檢查黑線、反光與四角點選。")
+                    print("CROSS CHECK: Centre error exceeds 5% or angle exceeds 8 degrees; check the lines, reflections and corner clicks.")
                 else:
-                    print("十字線檢查：中心差及方向在暫定提醒門檻內。")
-                print("十字線只供輔助檢查，無法保證四角正確；結果可能受遮擋、反光與背景影響。校正和 PID 值沒有改變。")
+                    print("CROSS CHECK: Centre and angles are within the provisional warning limits.")
+                print("Cross check is only a guide and cannot guarantee correct corners. Obstructions, reflections and background may affect it. Calibration and PID values were not changed.")
             return
         if self.mode == "ball_colour" and self.latest_hsv is not None:
             if 0 <= int(click_y) < self.latest_hsv.shape[0] and 0 <= int(click_x) < self.latest_hsv.shape[1]:
@@ -1167,7 +1150,7 @@ class BallVision:
                 settings["value_min"] = max(20, value - 70)
                 self.mode = "normal"
                 print(
-                    f"B 已儲存球中心像素的 HSV：H={hue}, "
+                    f"B saved centre-pixel HSV only: H={hue}, "
                     f"S>={settings['saturation_min']}, V>={settings['value_min']}."
                 )
                 self._save_and_report_ready()
@@ -1175,14 +1158,14 @@ class BallVision:
 
         if self.mode == "corners":
             self.pending_corners.append(click_point)
-            print(f"C 已記錄角點 {len(self.pending_corners)}/4（{click_x:.0f}, {click_y:.0f}）。")
+            print(f"C captured corner {len(self.pending_corners)}/4 ({click_x:.0f}, {click_y:.0f}).")
             if len(self.pending_corners) == 4:
                 normalized, problem = normalize_platform_corners(self.pending_corners)
                 if problem is not None or normalized is None:
                     self.pending_corners = []
                     self.mode = "normal"
-                    print(f"C 平台邊界無效：{problem}")
-                    print("已保留先前有效的平台設定，請按 C 重試。")
+                    print(f"C rejected platform border: {problem}")
+                    print("Old valid platform settings were kept. Press C to retry.")
                     self._print_ready_checklist()
                     return
                 self.corners = normalized
@@ -1194,73 +1177,72 @@ class BallVision:
                 control_config = self.config.setdefault("control", {})
                 control_config.pop("zero_reference_pct", None)
                 control_config.pop("zero_reference_mm", None)
-                self.corner_success_message = "C 已儲存平台四角，計算出的中心為零點。"
+                self.corner_success_message = "C platform corners saved as TL/TR/BR/BL; its calculated centre is zero."
                 self.mode = "normal"
-                print(f"C 已依左上、右上、右下、左下順序儲存平台邊界：{self.corners}")
-                print("平台邊界已儲存，計算出的平台中心為零點；偵測到球後可按 R 啟動。")
+                print(f"C saved platform border TL/TR/BR/BL: {self.corners}")
+                print("C saved platform border. The calculated platform centre is zero; R can start RUN when the ball is detected.")
                 self._save_and_report_ready()
             else:
                 next_label = self.corner_labels[len(self.pending_corners)]
-                corner_name = {"TL": "左上", "TR": "右上", "BR": "右下", "BL": "左下"}[next_label]
-                print(f"C 下一步：點選{corner_name}角（{len(self.pending_corners) + 1}/4）。")
+                print(f"C next: click {next_label} corner ({len(self.pending_corners) + 1}/4).")
             return
 
-        print("READY 待命：按 B 設定球色，按 C 校正平台四角，設定完成後按 R 啟動。")
+        print("READY: press B for HSV, C for platform border (its centre becomes zero), or R to RUN when complete.")
 
     def handle_key(self, key: int) -> bool:
         if key in (ord("q"), 27):
             return False
         if key == ord("n"):
-            self._safe_ready("已停止控制並回到 READY，準備搜尋 Nano。")
+            self._safe_ready("Stopped for Nano search. Back to READY; no live position or servo commands are being sent.")
             self.mode = "normal"
             self.transport.search_and_connect()
         elif key == ord("a"):
             self._apply_saved_config()
         elif key == ord("b"):
-            self._safe_ready("已選擇 B 並回到 READY，停止傳送位置與伺服控制指令。")
+            self._safe_ready("B selected. Back to READY; no live position or servo commands are being sent.")
             self.mode = "ball_colour"
-            print("B：請點選球中心，只會儲存 HSV 顏色。")
+            print("B: click the centre of the ball. Only HSV colour will be saved.")
         elif key in (ord("x"), ord("X")):
-            self._safe_ready("已選擇 X：停止控制以檢查十字線。")
+            self._safe_ready("X selected: stopped control before cross inspection.")
             self.mode = "normal"
             self.cross_check_marker = None
             if not self._has_platform():
-                print("十字線檢查：請先用 C 校正平台四角。")
+                print("CROSS CHECK: Press C and calibrate all four platform corners first.")
             else:
                 self.mode = "cross_sample"
-                print("十字線檢查：移開球，點一下黑色十字線的清楚線段；兩條線都要可見。按 P 取消。")
+                print("CROSS CHECK: Remove the ball and click a clear part of the black cross. Both lines must be visible. Press P to cancel.")
         elif key == ord("c"):
             self.cross_check_marker = None
-            self._safe_ready("已選擇 C 並回到 READY，停止傳送位置與伺服控制指令。")
+            self._safe_ready("C selected. Back to READY; no live position or servo commands are being sent.")
             self.pending_corners = []
             self.filtered_position = None
             self.mode = "corners"
-            print("C: 依序點四角：TL -> TR -> BR -> BL（左上、右上、右下、左下）。")
-            print("C 的點選進度會顯示在終端機；新四角通過驗證前，仍保留先前有效設定。")
+            print("C: Click corners in order: top-left, top-right, bottom-right, bottom-left.")
+            print("C click progress is printed in the terminal. Old valid platform settings stay active unless the new four corners pass validation.")
         elif key in (ord("p"), ord("P")):
-            self._safe_ready("已按 P、回到 READY 並停止傳送位置與伺服控制指令。")
+            self._safe_ready("P pressed. Back to READY; sent READY and stopped live POS/LOST/servo control.")
             self.mode = "normal"
         elif key in (ord("r"), ord("R")):
             if self.pid_running:
-                self._safe_ready("運行中按下 R，已回到 READY 並停止控制。")
+                self._safe_ready("R pressed during RUN. Back to READY; no live position or servo commands are being sent.")
             elif self.run_start_phase is not None:
-                print("啟動 RUN 正在等待 Nano 確認；按 P 可安全取消並回到 READY。")
+                print("RUN is already waiting for Nano ACK. Press P to cancel safely back to READY.")
             elif self.mode != "normal":
-                print("無法啟動 RUN：請先完成目前的設定步驟，或按 A 套用已儲存設定。")
+                print("Cannot RUN: finish the active READY step first, or press A to apply saved config.")
             elif not self.transport.is_connected:
-                print("無法啟動 RUN：Nano 尚未連線，請按 n 搜尋。")
+                print("Cannot RUN: Nano is not connected. Press n to search.")
             elif not self._ready_complete():
-                print("無法啟動 RUN：READY 準備清單尚未完成。")
+                print("Cannot RUN: READY checklist is incomplete.")
                 self._print_ready_checklist()
             elif self.latest_position is None:
                 if self.last_outside_platform_position is not None:
                     x, y = self.last_outside_platform_position
                     print(
-                        "無法啟動 RUN：HSV 偵測位置超出校正後的平台 "
-                        f"(X={x:+.1f}%, Y={y:+.1f}%)。請檢查 B 球色設定，或將球放在 C 校正邊界內。"
+                        "Cannot RUN: HSV candidate is outside the calibrated platform "
+                        f"(X={x:+.1f}%, Y={y:+.1f}%). Recheck B ball HSV or place the ball inside the C border."
                     )
                 else:
-                    print("無法啟動 RUN：尚未偵測到球。請讓球入鏡，再按 R 重試。")
+                    print("Cannot RUN: ball is not detected yet. Keep it visible, then press R again.")
             else:
                 self.cross_check_marker = None
                 self._request_run(self.latest_position)
@@ -1270,14 +1252,14 @@ class BallVision:
         backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
         capture = cv2.VideoCapture(camera_index, backend)
         if not capture.isOpened():
-            raise RuntimeError(f"無法開啟攝影機 index {camera_index}")
+            raise RuntimeError(f"Cannot open camera index {camera_index}. Check the camera, permissions and whether another program is using it.")
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         capture.set(cv2.CAP_PROP_FPS, requested_fps)
         if not self.headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
             cv2.setMouseCallback(WINDOW_NAME, self._mouse_callback)
-            print("操作說明：PID 參數由 Nano 韌體管理。A 套用儲存設定；B 設定球色；C 依左上、右上、右下、左下校正四角；X 檢查十字線；R 啟動；P 暫停；Q 離開。")
+            print(f"GUIDE: {CONTROL_AUTHORITY_LABEL}; READY checklist uses A=apply saved config, B=HSV, C=platform TL->TR->BR->BL (calculated centre is zero), X=check drawn cross, R=RUN, P=READY/pause, Q=quit.")
             self._print_ready_checklist()
 
         frame_count = 0
@@ -1285,7 +1267,7 @@ class BallVision:
             while max_frames <= 0 or frame_count < max_frames:
                 ok, frame = capture.read()
                 if not ok:
-                    raise RuntimeError("攝影機讀取失敗")
+                    raise RuntimeError("Camera frame could not be read.")
                 now = time.monotonic()
                 elapsed = max(now - self.last_frame_at, 0.001)
                 self.fps = 0.9 * self.fps + 0.1 / elapsed
@@ -1336,21 +1318,21 @@ class BallVision:
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="平衡球影像辨識與 Arduino Nano 通訊")
+    parser = argparse.ArgumentParser(description="OpenCV ball detection for Arduino Nano ball balancing")
     default_config = Path(__file__).with_name("camera_config.json")
     parser.add_argument("--config", type=Path, default=default_config)
     parser.add_argument("--camera-index", type=int)
-    parser.add_argument("--serial-port", help="手動指定序列埠，例如 Windows 的 COM3 或 Linux 的 /dev/ttyUSB0")
-    parser.add_argument("--no-serial", action="store_true", help="不連線 Nano，直接開啟 READY 設定")
-    parser.add_argument("--headless", action="store_true", help="不顯示預覽視窗，供攝影機診斷使用")
-    parser.add_argument("--max-frames", type=int, default=0, help="處理指定影格數後停止（0 表示持續執行）")
+    parser.add_argument("--serial-port", help="e.g. COM3 on Windows or /dev/ttyUSB0 on Linux")
+    parser.add_argument("--no-serial", action="store_true", help="open READY setup without a Nano connection")
+    parser.add_argument("--headless", action="store_true", help="no preview window; useful for camera diagnostics")
+    parser.add_argument("--max-frames", type=int, default=0, help="stop after this many frames (0 = run until q)")
     return parser.parse_args()
 
 
 def _request_graceful_shutdown(signal_number: int, _frame: Any) -> None:
     """Turn shell Ctrl+C/SIGTERM into Python unwinding so run() releases the camera."""
     signal_name = signal.Signals(signal_number).name
-    print(f"收到 {signal_name}：正在關閉攝影機視窗並讓 Nano 回到 READY。")
+    print(f"Received {signal_name}: closing camera window and returning Nano to READY.")
     raise KeyboardInterrupt
 
 
@@ -1374,10 +1356,10 @@ def main() -> int:
         )
         return 0
     except KeyboardInterrupt:
-        print("攝影機程式已安全停止。")
+        print("Camera Vision stopped safely.")
         return 0
     except RuntimeError as error:
-        print(f"錯誤：{error}", file=sys.stderr)
+        print(f"ERROR: {error}", file=sys.stderr)
         return 2
     finally:
         transport.close()

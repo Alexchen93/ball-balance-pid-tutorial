@@ -16,13 +16,13 @@ if CAMERA_VISION_DEV_DIR="$tmp/dev" CAMERA_VISION_SYS_TTY_DIR="$tmp/sys/class/tt
   echo "busy mocked port should not be selected" >&2
   exit 1
 fi
-grep -q '正在被其他程式使用' /tmp/camera-vision-find.err
+grep -q 'in use by another program' /tmp/camera-vision-find.err
 
 if CAMERA_VISION_BUSY_PORTS="$tmp/dev/ttyUSB0" CAMERA_VISION_LAUNCHER_TEST=ensure_port_free "$launcher" "$tmp/dev/ttyUSB0" >/tmp/camera-vision-busy.out 2>/tmp/camera-vision-busy.err; then
   echo "ensure_port_free should reject a busy mocked port" >&2
   exit 1
 fi
-grep -q 'Camera Vision 不會接手忙碌的 port' /tmp/camera-vision-busy.err
+grep -q 'Camera Vision will not take over a busy port' /tmp/camera-vision-busy.err
 
 if grep -q 'serial.tools.list_ports' "$launcher"; then
   echo "launcher detector must not import pyserial list_ports" >&2

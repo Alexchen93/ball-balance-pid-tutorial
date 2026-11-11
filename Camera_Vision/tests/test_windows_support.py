@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -8,6 +9,12 @@ from ball_vision import BallVision, NanoTransport
 
 
 class WindowsSupportTest(unittest.TestCase):
+    def test_windows_launcher_and_program_use_ascii_text(self):
+        folder = Path(__file__).resolve().parents[1]
+        for name in ("start_camera_vision.bat", "ball_vision.py"):
+            with self.subTest(name=name):
+                (folder / name).read_bytes().decode("ascii")
+
     def test_search_lists_com_ports_without_filesystem_permission_check(self):
         ports = [
             SimpleNamespace(device="COM3", description="USB-SERIAL CH340", manufacturer=""),
