@@ -4,9 +4,11 @@
 
 ## Windows 啟動方式
 
-現有的 `start_camera_vision.sh` 是 Linux 專用，不能直接在 Windows 執行。將更新後的整個 `Camera_Vision` 資料夾複製到 Windows 電腦，然後在檔案總管**雙擊 `start_camera_vision.bat`**。不要複製 Linux 的 `.venv` 或另一台電腦的 `.venv-win`。
+現有的 `start_camera_vision.sh` 是 Linux 專用，不能直接在 Windows 執行。將更新後的整個 `Camera_Vision` 資料夾複製到 Windows 電腦，然後在檔案總管**雙擊 `start_camera_vision.bat`**。請先解壓縮；不要複製 Linux 的 `.venv` 或另一台電腦的 `.venv-win`、`.python-win`。
 
-首次使用需已安裝 Windows 版 Python 3.10 以上並連接網路，建議使用 Python 3.12。啟動器會自動建立 `.venv-win` 並安裝必要套件；可能需要幾分鐘。安裝 Python 時請啟用 Python Launcher 並勾選將 Python 加入 PATH。若啟動器找不到 Python，請完成安裝後關閉視窗，再雙擊一次。若較新版本的 Python 無法安裝必要套件，請改用 Python 3.12，刪除 `.venv-win` 後重試。之後雙擊即可直接啟動。
+首次啟動需連接網路。如果找不到可用的 Python，啟動器會從 Python 官方網站下載 Windows 64 位元安裝程式、核對 SHA-256，並在目前使用者的 `Camera_Vision/.python-win` 安裝 Python 3.13.17；接著建立 `.venv-win` 並安裝套件。整個過程可能需要幾分鐘，請保持視窗開啟。Python 安裝不會加入系統 PATH；Windows 仍可能顯示安全提示或受到學校電腦的安裝政策限制。如果已找到 Python 3.10 以上，啟動器會使用現有版本。以後雙擊即可啟動。
+
+自動下載或安裝失敗時，請檢查網路、資料夾寫入權限和畫面的英文錯誤；Python 安裝紀錄為 `python-install.log`，套件安裝紀錄為 `.venv-win/install.log`。執行環境不可從另一台電腦直接複製，若誤複製導致無法執行，請先關閉程式並移除該電腦的 `.venv-win`、`.python-win`，再重新雙擊安裝。
 
 程式會使用 `camera_config.json` 中的 `camera.index`（預設 0），並自動搜尋 Nano；沒有 Nano 仍可進入 READY 畫面。如果開到錯的鏡頭，關閉程式並將 `camera_config.json` 的 `camera.index` 改為其他編號，例如 `1`，再雙擊啟動。程式啟動失敗時會保留錯誤訊息，方便檢查。
 

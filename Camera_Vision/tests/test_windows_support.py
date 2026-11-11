@@ -11,9 +11,18 @@ from ball_vision import BallVision, NanoTransport
 class WindowsSupportTest(unittest.TestCase):
     def test_windows_launcher_and_program_use_ascii_text(self):
         folder = Path(__file__).resolve().parents[1]
-        for name in ("start_camera_vision.bat", "ball_vision.py"):
+        for name in ("start_camera_vision.bat", "install_python_windows.ps1", "ball_vision.py"):
             with self.subTest(name=name):
                 (folder / name).read_bytes().decode("ascii")
+
+    def test_python_installer_is_checked_before_execution(self):
+        folder = Path(__file__).resolve().parents[1]
+        installer = (folder / "install_python_windows.ps1").read_text(encoding="ascii")
+        expected = "5da012101ba2e17113a9a1cd901e9ce1441086f2b7ecb5de06ec94163899a190"
+        self.assertIn("https://www.python.org/ftp/python/3.13.17/python-3.13.17-amd64.exe", installer)
+        self.assertIn(expected, installer)
+        self.assertLess(installer.index("Get-FileHash"), installer.index("Start-Process"))
+        self.assertIn("$actualSha256 -ne $expectedSha256", installer)
 
     def test_search_lists_com_ports_without_filesystem_permission_check(self):
         ports = [

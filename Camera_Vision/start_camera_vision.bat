@@ -8,6 +8,7 @@ echo First run: preparing the Python environment for Windows.
 echo An internet connection is required to install the packages.
 echo.
 
+if exist "%~dp0.python-win\python.exe" goto create_local_environment
 py -3.12 -c "import sys" >nul 2>&1
 if not errorlevel 1 (
   set "PYTHON_LAUNCHER=py -3.12"
@@ -34,12 +35,22 @@ if not errorlevel 1 (
   goto create_environment
 )
 
-echo Python 3.10 or newer was not found by the Python launcher or PATH.
-echo Install Python 3.12 for Windows, including the Python launcher,
-echo and select "Add python.exe to PATH" during installation.
-echo Download: https://www.python.org/downloads/windows/
-echo After installation, close this window and double-click this file again.
-goto error_exit
+echo Python was not found. Downloading and installing Python automatically.
+echo This can take several minutes. Please keep this window open.
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0install_python_windows.ps1"
+if errorlevel 1 goto error_exit
+if not exist "%~dp0.python-win\python.exe" (
+  echo Python installation did not create the expected executable.
+  goto error_exit
+)
+
+:create_local_environment
+"%~dp0.python-win\python.exe" -m venv "%~dp0.venv-win"
+if errorlevel 1 (
+  echo Failed to create the Python environment. See the error above.
+  goto error_exit
+)
+goto check_environment
 
 :create_environment
 %PYTHON_LAUNCHER% -m venv "%~dp0.venv-win"
@@ -62,8 +73,7 @@ echo Installing required packages. This may take a few minutes.
 if errorlevel 1 (
   echo Package installation failed. Check your internet connection.
   echo Details: .venv-win\install.log
-  echo If this Python version is unsupported, install Python 3.12,
-  echo delete .venv-win, and double-click this file again.
+  echo Details about package installation are in .venv-win\install.log.
   goto error_exit
 )
 "%PYTHON%" -c "import cv2, numpy, serial" >nul 2>&1
