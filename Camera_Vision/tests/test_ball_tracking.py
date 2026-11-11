@@ -31,6 +31,16 @@ class BallTrackingTest(unittest.TestCase):
         center, _ = self.vision._detect_ball(frame)
         self.assertAlmostEqual(center[0], 300.0, delta=1.0)
 
+    def test_dark_seam_is_joined_before_nearest_candidate_selection(self):
+        frame = np.zeros((240, 400, 3), dtype=np.uint8)
+        cv2.circle(frame, (125, 120), 40, (0, 0, 255), -1)
+        cv2.line(frame, (85, 120), (165, 120), (0, 0, 0), 4)
+        self.vision.last_valid_ball_center = (125.0, 100.0)
+        center, radius = self.vision._detect_ball(frame)
+        self.assertAlmostEqual(center[0], 125.0, delta=1.0)
+        self.assertAlmostEqual(center[1], 120.0, delta=1.0)
+        self.assertAlmostEqual(radius, 40.0, delta=1.0)
+
     def test_ready_keeps_original_largest_candidate_selection(self):
         self.vision.pid_running = False
         frame = np.zeros((240, 400, 3), dtype=np.uint8)

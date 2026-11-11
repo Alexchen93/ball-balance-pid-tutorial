@@ -35,9 +35,9 @@ constexpr uint8_t STATUS_LED_PIN = LED_BUILTIN;
 // 不可當作正式 PID 的機構中心值。正式 PID 請只轉填/調整下列中心與安全行程常數。
 // 安全限制：中心應落在各軸 MIN/MAX 之間，端點不可超出校正安全範圍。
 // X 軸水平中心角度；校正完成後從 SETC / SHOW / 學習單轉填。
-constexpr int SERVO_X_CENTER = 77;
+constexpr int SERVO_X_CENTER = 76;
 // Y 軸水平中心角度；校正完成後從 SETC / SHOW / 學習單轉填。
-constexpr int SERVO_Y_CENTER = 87;
+constexpr int SERVO_Y_CENTER = 90;
 // X、Y 的 Servo 角度減少／增加兩側可分別校正。
 // 這裡的增加／減少指 Servo 命令角度，不直接代表平台哪一側上升。
 // 預設仍為 ±20 度，端點必須經機構實測，不可使用實體硬停點。

@@ -44,8 +44,8 @@ int main() {
   assert(closeEnough(servoOffsetForOutput(-0.5f, -1, 20, 30), -15.0f));
   assert(closeEnough(servoOffsetForOutput(-1.0f, 1, 20, 30), -20.0f));
   assert(closeEnough(servoOffsetForOutput(1.0f, 1, 20, 30), 30.0f));
-  assert(SERVO_X_MIN_ANGLE == 57 && SERVO_X_MAX_ANGLE == 97);
-  assert(SERVO_Y_MIN_ANGLE == 67 && SERVO_Y_MAX_ANGLE == 107);
+  assert(SERVO_X_MIN_ANGLE == 56 && SERVO_X_MAX_ANGLE == 96);
+  assert(SERVO_Y_MIN_ANGLE == 70 && SERVO_Y_MAX_ANGLE == 110);
   setup();
   command("RUN");
   assert(controllerState != RUN);

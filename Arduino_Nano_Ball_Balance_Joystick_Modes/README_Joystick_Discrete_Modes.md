@@ -35,7 +35,7 @@ Servo X 使用 D9、Servo Y 使用 D10。Servo 仍須由獨立 5–6 V 電源供
 - **短按 SW**：在 MODE1 / MODE2 之間切換。
 - **在 TEST 長按 SW 1.5 秒**：X、Y 回到 `testCenterX` / `testCenterY`。
 
-目前程式設為 X 中心 77°、Y 中心 87°、offset 20°。**校正韌體目前兩軸共用 X 中心推得的 57°～97° 限幅**，不是各自中心 ±20°；正式 PID 韌體則依各軸中心各自計算。這些數值不保證符合實際機構，尤其要先確認 Y 軸安全範圍；方向檢查只用 MODE1 小步，不用 MODE2。
+目前程式設為 X 中心 76°、Y 中心 90°、offset 20°。**校正韌體目前兩軸共用 X 中心推得的 56°～96° 限幅**，不是各自中心 ±20°；正式 PID 韌體則依各軸中心各自計算。這些數值不保證符合實際機構，尤其要先確認 Y 軸安全範圍；方向檢查只用 MODE1 小步，不用 MODE2。
 
 ## 建議校正流程
 
@@ -52,8 +52,8 @@ Servo X 使用 D9、Servo Y 使用 D10。Servo 仍須由獨立 5–6 V 電源供
 
 ```text
 MODE,NAME=MODE1,ACTION=MICRO_STEP_1DEG,ARMED=0,SOURCE=JOYSTICK
-X,ANGLE=78,CENTER=77,LIMIT=57-97,PIN=9,TEST_FW_PID_DIR=-1,JOY_ADC=760,JOY_DIR=INCREASE,SERVO_CHANGE=INCREASE
-Y,ANGLE=87,CENTER=87,LIMIT=57-97,PIN=10,TEST_FW_PID_DIR=-1,JOY_ADC=510,JOY_DIR=CENTER,SERVO_CHANGE=NONE
+X,ANGLE=77,CENTER=76,LIMIT=56-96,PIN=9,TEST_FW_PID_DIR=-1,JOY_ADC=760,JOY_DIR=INCREASE,SERVO_CHANGE=INCREASE
+Y,ANGLE=90,CENTER=90,LIMIT=56-96,PIN=10,TEST_FW_PID_DIR=-1,JOY_ADC=510,JOY_DIR=CENTER,SERVO_CHANGE=NONE
 ```
 
 放開搖桿回中立不會再額外輸出；下一次有效推桿才印出下一組。`ARMED` 等資訊反映輸出當下的狀態，不會因回中立而在舊文字上更新。手動指令 `JOY`、`DIR`、`SHOW`、`HELP` 仍會輸出各自的查詢或結果。

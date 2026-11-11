@@ -48,9 +48,9 @@ constexpr uint32_t TARGET_REPORT_PERIOD_MS = 200UL;
 // 從正式 PID 韌體複製後須人工同步：數值不代表實機校正已完成。
 // 安全限制：中心應落在各軸 MIN/MAX 之間，端點不可超出校正安全範圍。
 // X 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填。
-constexpr int SERVO_X_CENTER = 77;
+constexpr int SERVO_X_CENTER = 76;
 // Y 軸機構中心角度。校正完成後，從 SETC / SHOW / 學習單轉填。
-constexpr int SERVO_Y_CENTER = 87;
+constexpr int SERVO_Y_CENTER = 90;
 // Servo 實體安全行程，也是 normalized PID 輸出 100% 時的最大安全機構要求。
 // 調整 OFFSET 即可改每軸中心 ±安全端點，不需要手算端點；不要使用實體硬停點。
 constexpr int SERVO_LIMIT_OFFSET_DEG = 20;

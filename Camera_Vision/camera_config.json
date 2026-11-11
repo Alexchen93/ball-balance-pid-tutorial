@@ -10,28 +10,28 @@
     "height_mm": 180.0,
     "corners_px": [
       [
-        141.0,
-        149.0
+        168.0,
+        112.0
       ],
       [
-        478.0,
-        147.0
+        485.0,
+        113.0
       ],
       [
-        621.0,
-        353.0
+        594.0,
+        285.0
       ],
       [
-        12.0,
-        352.0
+        52.0,
+        271.0
       ]
     ]
   },
   "ball_hsv": {
-    "hue": 150,
+    "hue": 159,
     "hue_tolerance": 12,
-    "saturation_min": 72,
-    "value_min": 133
+    "saturation_min": 115,
+    "value_min": 57
   },
   "detection": {
     "min_radius_px": 4.0,

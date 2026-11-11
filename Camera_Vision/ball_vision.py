@@ -702,7 +702,16 @@ class BallVision:
             )
         kernel_size = max(1, int(self.config["detection"]["morph_kernel_px"]))
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        return cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
+        # A narrow dark seam can split one ball into two HSV contours. Join
+        # only small gaps before candidate tracking so it does not follow a
+        # fragment with a misleading centre/radius. This does not relax the
+        # contact-point boundary check.
+        seam_size = max(1, min(31, int(self.config["detection"].get("seam_close_kernel_px", 7)))) | 1
+        if seam_size > kernel_size:
+            seam_kernel = np.ones((seam_size, seam_size), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, seam_kernel)
+        return mask
 
     def _detect_ball(self, frame: np.ndarray) -> tuple[tuple[float, float], float] | None:
         self.latest_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)

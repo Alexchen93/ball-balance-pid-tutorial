@@ -44,8 +44,8 @@ constexpr uint16_t JOYSTICK_DEBOUNCE_MS = 30;
 
 // ===== 學生校正參數（校正完成後只修改本區） =====
 // Mechanical calibration: set these before enabling RUN on the real platform.
-constexpr int SERVO_X_CENTER = 77;
-constexpr int SERVO_Y_CENTER = 87;
+constexpr int SERVO_X_CENTER = 76;
+constexpr int SERVO_Y_CENTER = 90;
 // 本校正程式共用以 X 中心計算的上下限；兩軸都使用此共用範圍。
 // 各軸機構安全範圍必須實測，此設定不保證適合 Y 軸。
 constexpr int SERVO_LIMIT_OFFSET_DEG = 20;
