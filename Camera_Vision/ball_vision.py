@@ -1192,6 +1192,9 @@ class BallVision:
         print("READY: press B for HSV, C for platform border (its centre becomes zero), or R to RUN when complete.")
 
     def handle_key(self, key: int) -> bool:
+        # The prompts use capital letters; accept them on Windows as well.
+        if sys.platform == "win32" and key in (ord("A"), ord("B"), ord("C"), ord("N"), ord("Q")):
+            key += ord("a") - ord("A")
         if key in (ord("q"), 27):
             return False
         if key == ord("n"):
@@ -1304,9 +1307,10 @@ class BallVision:
                 if (lost_sent and loss_reason == "OUTSIDE" and ball is not None
                         and contact_point is not None and self.last_outside_platform_position is not None):
                     self._save_outside_frame(frame, ball, contact_point, self.last_outside_platform_position)
-                # Read Nano responses in READY too, so the initial PONG confirms
-                # communication without opening/resetting the serial port twice.
-                self._handle_nano_events()
+                # Windows reads READY responses to show the initial PONG without
+                # reopening/resetting the serial port. Linux keeps its original flow.
+                if sys.platform == "win32" or self.pid_running or self.run_start_phase is not None:
+                    self._handle_nano_events()
                 if not self.headless:
                     cv2.imshow(WINDOW_NAME, self._draw_overlay(frame, ball, position))
                     if not self.handle_key(cv2.waitKey(1) & 0xFF):

@@ -11,7 +11,7 @@ from serial.tools import list_ports
 
 
 CAMERA_SCAN_LIMIT = 10
-PREVIEW_WINDOW = "Camera preview - press Y, N or Q"
+PREVIEW_WINDOW = "Camera preview only - press Y to continue"
 
 
 def camera_can_read(index: int) -> bool:
@@ -44,15 +44,20 @@ def preview_camera(index: int) -> bool | None:
             return False
         cv2.namedWindow(PREVIEW_WINDOW, cv2.WINDOW_AUTOSIZE)
         window_created = True
-        print("Click the preview window, then press Y to use it, N to choose again, or Q to quit.")
+        print("This window only checks the camera. Ball and border calibration come later.")
+        print("Click the preview window, then press Y to continue, N to choose again, or Q to quit.")
         while True:
             ok, frame = capture.read()
             if not ok or frame is None or not frame.size:
                 print("Could not read the camera preview. Close other camera programs and retry.")
                 return False
-            cv2.putText(frame, f"Camera {index}: Y=use  N=choose again  Q=quit", (10, 25),
+            cv2.putText(frame, f"PREVIEW ONLY - camera {index}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
-            cv2.putText(frame, f"Camera {index}: Y=use  N=choose again  Q=quit", (10, 25),
+            cv2.putText(frame, f"PREVIEW ONLY - camera {index}", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.putText(frame, "Y=continue  N=choose again  Q=quit", (10, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+            cv2.putText(frame, "Y=continue  N=choose again  Q=quit", (10, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
             cv2.imshow(PREVIEW_WINDOW, frame)
             key = cv2.waitKey(30) & 0xFF
@@ -168,6 +173,7 @@ def main() -> int:
         proceed, port = choose_port()
         if not proceed:
             return 0
+        print("Opening the normal Ball vision READY window. Click it, press B to sample the ball, then C to mark the corners.", flush=True)
         program = Path(__file__).with_name("ball_vision.py")
         command = [sys.executable, str(program), "--camera-index", str(camera)]
         command += ["--serial-port", port] if port else ["--no-serial"]

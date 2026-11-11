@@ -87,10 +87,50 @@ class WindowsSupportTest(unittest.TestCase):
         capture = MagicMock()
         capture.isOpened.return_value = True
         capture.read.return_value = (True, np.zeros((8, 8, 3), dtype=np.uint8))
-        with patch("ball_vision.cv2.VideoCapture", return_value=capture):
+        with patch("ball_vision.sys.platform", "win32"), patch("ball_vision.cv2.VideoCapture", return_value=capture):
             vision.run(0, 8, 8, 30, 1)
         vision.transport.poll.assert_called_once()
         capture.release.assert_called_once()
+
+    def test_windows_uppercase_b_and_c_perform_normal_calibration(self):
+        vision = BallVision.__new__(BallVision)
+        vision.mode = "normal"
+        vision._safe_ready = MagicMock()
+        vision._save_and_report_ready = MagicMock()
+        vision._rebuild_homography = MagicMock()
+        vision.latest_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        vision.latest_hsv = np.full((480, 640, 3), (70, 200, 200), dtype=np.uint8)
+        vision.config = {"ball_hsv": {}, "platform": {}, "control": {}}
+        vision.corner_labels = ("TL", "TR", "BR", "BL")
+        with patch("ball_vision.sys.platform", "win32"), patch("builtins.print"):
+            vision.handle_key(ord("B"))
+            self.assertEqual(vision.mode, "ball_colour")
+            vision._mouse_callback(cv2.EVENT_LBUTTONDOWN, 100, 100, 0, None)
+            self.assertEqual(vision.config["ball_hsv"]["hue"], 70)
+            vision.handle_key(ord("C"))
+            self.assertEqual(vision.mode, "corners")
+            for x, y in ((20, 20), (500, 20), (500, 400), (20, 400)):
+                vision._mouse_callback(cv2.EVENT_LBUTTONDOWN, x, y, 0, None)
+        self.assertEqual(vision.mode, "normal")
+        self.assertEqual(vision.config["platform"]["corners_px"],
+                         [[20.0, 20.0], [500.0, 20.0], [500.0, 400.0], [20.0, 400.0]])
+
+    def test_linux_ready_loop_keeps_original_serial_polling(self):
+        vision = BallVision.__new__(BallVision)
+        vision.headless = True
+        vision.last_frame_at = 0.0
+        vision.fps = 0.0
+        vision.pid_running = False
+        vision.run_start_phase = None
+        vision.zero_reference = None
+        vision.transport = MagicMock()
+        vision._detect_ball = MagicMock(return_value=None)
+        capture = MagicMock()
+        capture.isOpened.return_value = True
+        capture.read.return_value = (True, np.zeros((8, 8, 3), dtype=np.uint8))
+        with patch("ball_vision.sys.platform", "linux"), patch("ball_vision.cv2.VideoCapture", return_value=capture):
+            vision.run(0, 8, 8, 30, 1)
+        vision.transport.poll.assert_not_called()
 
 
 if __name__ == "__main__":
